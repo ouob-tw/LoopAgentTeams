@@ -5,8 +5,10 @@
   task-proposal.py status ID            what the proposal's result is now
   task-proposal.py wait ID [--timeout S] wait for a result, at most S seconds (default 600, cap 3600)
   task-proposal.py withdraw ID          take back your own waiting proposal
+  task-proposal.py away TASK            為事件任務暫停並關閉自己: the board marks you 事件等待
+                                        for your approved 接回原主控 event task and closes you
 
-`submit` and `withdraw` go to the board over its local socket, where the board checks which
+`submit`, `withdraw` and `away` go to the board over its local socket, where the board checks which
 agent sent them; `status` and `wait` only read the result files and work without the board.
 Add `--json` before the subcommand for one JSON object instead of text.
 
@@ -29,6 +31,7 @@ import sys
 import time
 
 PROPOSAL_ID = re.compile(r'^[a-f0-9]{12}$')
+TASK_ID = re.compile(r'^proposal-[a-f0-9]{12}$')
 MAX_REQUEST_BYTES = 1024 * 1024
 # The acceptor gives the board 30 seconds; a little more here.
 ANSWER_TIMEOUT_SECONDS = 40
@@ -71,6 +74,15 @@ def proposals_dir():
 def proposal_id(value):
     if not PROPOSAL_ID.match(value):
         raise argparse.ArgumentTypeError('提案編號是 12 個小寫英數字（0-9、a-f）')
+    return value
+
+
+def task_id(value):
+    """An approved proposal's task: its task ID, or the proposal ID it was made from."""
+    if PROPOSAL_ID.match(value):
+        return f'proposal-{value}'
+    if not TASK_ID.match(value):
+        raise argparse.ArgumentTypeError('任務編號是 proposal- 加 12 個小寫英數字，或直接給提案編號')
     return value
 
 
@@ -135,7 +147,9 @@ def read_task(source):
         raise Done(2, '提案要是一個 JSON 物件，欄位和看板的「新增任務」相同', dict(ok=False, error='not-object'))
     if not isinstance(task.get('name'), str) or not task['name'].strip():
         problems.append('name：請填名稱')
-    if task.get('kind') not in ('command', 'agent'):
+    if task.get('trigger') == 'event' and task.get('handoff') == 'resume':
+        pass  # 接回原主控: the controller itself takes over, so there is no Agent to set up.
+    elif task.get('kind') not in ('command', 'agent'):
         problems.append('kind：要是 command 或 agent')
     elif not isinstance(task.get(task['kind']), dict):
         problems.append(f'{task["kind"]}：要是一個物件')
@@ -153,6 +167,13 @@ def submit(args):
     if reply.get('status') == 'invalid':
         raise Done(1, f'無效：{reply["id"]}{error_lines(reply.get("errors"))}', reply)
     raise Done(0, f'已送出：{reply["id"]}\n等使用者在看板核准；查詢結果：task-proposal.py status {reply["id"]}', reply)
+
+
+def away(args):
+    reply = ask_board(dict(op='away', task=args.task))
+    if not reply.get('ok'):
+        refused(reply)
+    raise Done(0, f'已標成事件等待：{args.task}\n看板會在幾秒內關閉你；事件發生時會把對話接回來（或你還開著時傳 HCOM 訊息）', reply)
 
 
 def withdraw(args):
@@ -228,6 +249,9 @@ def main(argv=None):
         command = commands.add_parser(name, help=text)
         command.add_argument('id', type=proposal_id)
         command.set_defaults(run=run)
+    going = commands.add_parser('away', help='為事件任務暫停並關閉自己（只給接回原主控的事件任務）')
+    going.add_argument('task', type=task_id, help='核准後的任務編號（proposal-…），或它的提案編號')
+    going.set_defaults(run=away)
     waiting = commands.add_parser('wait', help='等待結果')
     waiting.add_argument('id', type=proposal_id)
     waiting.add_argument('--timeout', type=float, default=WAIT_DEFAULT_SECONDS,

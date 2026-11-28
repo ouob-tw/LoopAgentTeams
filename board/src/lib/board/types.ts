@@ -6,6 +6,7 @@ import type { ClosedList } from './closed-agents.ts';
 import type { BoardAsk } from './board-asks.ts';
 import type { LedgerView } from './ledger.ts';
 import type { UnattendedView } from './unattended.ts';
+import { awayText } from './event-tasks.ts';
 
 /** Checked top to bottom; the first row that holds wins. */
 export type ControllerStatus = 'idle' | 'closed' | 'waiting' | 'delivered' | 'working';
@@ -36,7 +37,8 @@ export function needsWake(controller: Pick<Controller, 'status' | 'herdr'>): boo
 }
 
 /** What the roster shows as a controller's current phase. */
-export function phaseText(controller: Pick<Controller, 'phase'>): string {
+export function phaseText(controller: Pick<Controller, 'phase' | 'eventWait'>): string {
+	if (controller.eventWait) return awayText(controller.eventWait.taskName);
 	if (controller.phase === null) return '尚無回報';
 	return controller.phase || '（最新回報沒有摘要）';
 }
@@ -121,6 +123,8 @@ export interface Controller {
 	running: boolean;
 	/** Its HCOM link is paused from the board: still a running controller, reached through Herdr. */
 	paused: boolean;
+	/** Closed to wait for its 接回原主控 event task (事件等待, #764): the task it waits for. */
+	eventWait?: { taskId: string; taskName: string } | null;
 	/** Where the controller runs in Herdr; null once it is idle or closed. */
 	herdr: { workspace: string; tab: string; pane: string } | null;
 	/** Herdr location from the same roster read; a string explains a failed read. */

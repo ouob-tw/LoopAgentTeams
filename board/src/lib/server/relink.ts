@@ -19,7 +19,7 @@ import { isOwnPane } from './config.ts';
 import { readLaunchArgs, readTranscript } from './helper.ts';
 import { hasHoldTerminal, listAgents, resumeAgent, stopAgent, storedLaunchArgs } from './hcom.ts';
 import { agentCommand, listHerdrAgents, paneProcess, readScreen, type PaneProcess } from './herdr.ts';
-import { clearPause, isConnected, linkedAgain, pausing, readPauses, writePause } from './paused.ts';
+import { clearOrdinaryPause, clearPause, isConnected, linkedAgain, pausing, readPauses, writePause } from './paused.ts';
 import { bypassArgs, codexKeepArgs } from './permission.ts';
 import { isClient, isIdleShell, judgeHooks, relinkable, relinking } from './process-hooks.ts';
 import { queued } from './send.ts';
@@ -289,7 +289,7 @@ export function relinkAgent(board: Board, agentId: string) {
 				if ('why' in back) return { route: 'hcom', reason: `舊程序已結束，也執行了 hcom r，但${back.why}，沒有當成已接回；請到 Herdr 看它的畫面，它要是已經結束：${wayBack}`, text };
 				if (ready.name !== null && back.name !== ready.name) return { route: 'hcom', reason: `它重新啟動了，但接回時的名稱是 @${back.name}，不是原本的 @${ready.name}。`, text };
 				try {
-					clearPause(config.pausedDir, agentId);
+					clearOrdinaryPause(config.pausedDir, agentId);
 				} catch {
 					// On its link, so a later read removes it.
 				}

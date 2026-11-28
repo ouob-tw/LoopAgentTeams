@@ -171,6 +171,13 @@ export interface AgentHost {
 	close(agent: { sessionId: string | null; name: string }): Promise<string | null>;
 	/** Resume the conversation in its workspace with this message; why it could not, or null. */
 	resume(sessionId: string, workspace: string | null, prompt: string): Promise<string | null>;
+	/** 接回原主控 (#764): resume the closed controller's conversation in its Herdr workspace with this
+	 *  first message, as hcom reports it: `started` (its HCOM name when hcom printed one), `pending`
+	 *  (not known: hcom still starting it, or its command ran out of time), `failed`. */
+	resumeController(sessionId: string, workspace: string | null, prompt: string): Promise<{ outcome: 'started' | 'pending' | 'failed'; name: string | null; reason: string | null }>;
+	/** 接回原主控 to a controller hcom lists on its link: one HCOM message to that exact name, with
+	 *  hcom's message ID; `unsure` when the send ran out of time and may have gone out. */
+	message(name: string, text: string): Promise<{ ok: true; messageId: string | null } | { ok: false; reason: string; unsure: boolean }>;
 	/** The conversation's latest position (every item, not only replies); -1 when empty. */
 	position(client: AgentSpec['client'], sessionId: string): Promise<{ ok: true; seq: number } | { ok: false; reason: string }>;
 	/** The `model_provider` of a Codex run's own session record; null when it cannot be read. */

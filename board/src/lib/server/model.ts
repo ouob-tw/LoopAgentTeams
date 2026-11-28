@@ -67,6 +67,8 @@ export interface Sources {
 	unattended: Map<string, UnattendedView>;
 	/** Why it could not be read at this read; `unattended` is empty then. */
 	unattendedError: string | null;
+	/** Controllers away for their 接回原主控 event task (#764), by session: the task each waits for. */
+	aways?: Map<string, { taskId: string; taskName: string }>;
 }
 
 /** The controllers with every question that the answered list of the same read already has
@@ -452,7 +454,7 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 		const ledger = ledgerOf(sources, binding.session_id);
 		const controller = closed
 			? closedController(binding, file, duty, ledger, endedUnattended(sources, binding.session_id))
-			: { ...activeController(binding, file, duty, ledger, unattendedOf(sources, binding.session_id)), paused: isPaused(sources, binding.session_id) };
+			: { ...activeController(binding, file, duty, ledger, unattendedOf(sources, binding.session_id)), paused: isPaused(sources, binding.session_id), eventWait: sources.aways?.get(binding.session_id) ?? null };
 		if (sources.helperError) {
 			controller.error = joinErrors(`資料可能過期，輔助工具失敗：${sources.helperError}`, controller.error);
 		}

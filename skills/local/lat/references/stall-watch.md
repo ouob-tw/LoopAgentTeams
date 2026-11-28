@@ -270,6 +270,10 @@ The shared directory is the absolute `LAT_HCOM_PAUSED_DIR` override, otherwise
 `~/.local/state/lat/hcom-paused/`; a relative pause-directory override is ignored.
 Each record contains `session_id`, full `hcom_name`, `client`, nullable Herdr `pane`,
 and `paused_at` (UTC ISO 8601). The filename must match `session_id`.
+An event-wait record (事件等待) also has `reason: "event-task"` and the event task's
+`task_id`: the board closed a controller that waits for its event task, and removes the
+record itself once the controller is handed back or the task ends. The watcher treats it
+as any other pause.
 Unreadable or incomplete records are ignored with one warning per invalid path until
 repaired or removed; the watcher records this as `pause-record-invalid`.
 

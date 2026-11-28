@@ -13,11 +13,41 @@
         "board/tests/task-proposal-fixture.ts",
         "board/src/routes/api/automation/**",
         "board/tests/fake-hcom.mjs",
-        "board/tests/harness.ts"
+        "board/tests/harness.ts",
+        "board/tests/event-task-fixture.ts",
+        "board/src/lib/server/paused.ts",
+        "board/src/lib/server/automation-host.ts",
+        "board/src/lib/server/automation-agent.ts",
+        "board/src/lib/server/hcom.ts",
+        "board/hooks/task-proposal-acceptor.py",
+        "skills/local/task-proposal/scripts/task-proposal.py"
       ],
       "tests": [
         "board/tests/server/event-tasks.test.ts",
-        "board/tests/unit/event-tasks.test.ts"
+        "board/tests/unit/event-tasks.test.ts",
+        "board/tests/server/event-resume.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/src/lib/server/paused.ts",
+        "board/src/lib/server/agent-control.ts",
+        "board/src/lib/server/relink.ts"
+      ],
+      "tests": [
+        "board/tests/unit/pause-records.test.ts",
+        "board/tests/server/event-resume.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/src/lib/board/types.ts",
+        "board/src/lib/server/model.ts",
+        "board/src/lib/components/RosterRail.svelte"
+      ],
+      "tests": [
+        "board/tests/unit/event-tasks.test.ts",
+        "board/tests/server/event-resume.test.ts"
       ]
     }
   ]

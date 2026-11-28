@@ -69,9 +69,10 @@ export interface RunHandoff {
 	attempt: number;
 	event: EventOccurrence;
 	status: HandoffStatus;
-	/** What this attempt's delivery left: the session its new Agent got (#764 adds the resumed
-	 *  session and HCOM's message ID). */
-	evidence?: { sessionId?: string; messageId?: string };
+	/** What this attempt's delivery left: the session its new Agent got; for 接回原主控 (#764) the
+	 *  session hcom resumed with what it reported (`resumed`: its HCOM name, when it printed one), or
+	 *  the ID of the HCOM message sent to the controller that was running (`to`: its HCOM name). */
+	evidence?: { sessionId?: string; resumed?: { name: string | null }; messageId?: string; to?: string };
 	/** Why it failed or is not known. */
 	reason?: string;
 	/** When it became 已接手, 接手失敗 or 接手結果不明. */
@@ -123,6 +124,26 @@ export interface EventTaskView {
 	canTrigger: boolean;
 	canRetry: boolean;
 }
+
+/** 事件等待 (#764): a 接回原主控 task's controller that asked the board to pause and close it, kept
+ *  as `automation/away/<task>.json` until it is handed back (confirmed), the task is deleted or it
+ *  ends 已到期（暫停中）. The shared pause record (`reason: event-task`) is written from it, and
+ *  written again from it when the board starts. */
+export interface EventAway {
+	version: 1;
+	taskId: string;
+	sessionId: string;
+	hcomName: string;
+	client: string;
+	/** Its Herdr pane and workspace when it closed: where hcom resumes it. */
+	pane: string | null;
+	workspace: string | null;
+	/** UTC ISO 8601, as the pause record's `paused_at`. */
+	pausedAt: string;
+}
+
+/** The roster's words for a controller waiting on its event task. */
+export const awayText = (taskName: string) => `等待事件任務：${taskName}`;
 
 /** What a retry of 接手結果不明 warns of. */
 export const UNKNOWN_RETRY_WARNING = '上一次可能已經送到，重試可能讓主控收到兩次或開出兩個 Agent';
