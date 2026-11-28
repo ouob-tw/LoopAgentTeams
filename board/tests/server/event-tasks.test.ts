@@ -567,3 +567,29 @@ test('a Log file unreadable when the wait begins counts from its length at the f
 	await inState(s, id, 'done');
 	expect(promptOf(launches(board)[0])).toContain('比對到的那一行：READY now');
 });
+
+test('a reusable Log task whose run ended just before the board stopped sees a line written while it was off', async () => {
+	const s = await setup();
+	const { board, work } = s;
+	const logFile = join(work, 'logs/ready.log');
+	writeFileSync(logFile, 'begin\n');
+	const id = await approved(s, { type: 'log', path: logFile, text: 'READY' }, { repeat: true });
+	hcomPlan(board, [s.ctrl, s.luna], ['evt-z1']);
+	appendFileSync(logFile, 'READY one\n');
+	await inState(s, id, 'running');
+	appendFileSync(logFile, 'READY while it ran\n');
+	board.setClock(T0 + 5 * MINUTE);
+	done(board, 'evt-z1');
+	await inState(s, id, 'waiting');
+	await board.stop();
+	// As a board stopped after the run's end was recorded and before the new wait was saved: the wait
+	// file still holds the wait before the handoff.
+	const waitFile = join(board.dir, 'board-state/automation/events', `${id}.json`);
+	writeFileSync(waitFile, JSON.stringify({ version: 1, since: T0, log: null }));
+	appendFileSync(logFile, 'READY while the board was off\n');
+	hcomPlan(board, [s.ctrl, s.luna], ['evt-z2']);
+	await board.start();
+	await inState(s, id, 'running');
+	expect(launches(board)).toHaveLength(2);
+	expect(promptOf(launches(board)[1])).toContain('比對到的那一行：READY while the board was off');
+});

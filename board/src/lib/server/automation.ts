@@ -972,7 +972,12 @@ export function createAutomation(options: {
 
 	/** End an agent run: its record, the pages, red cards and pushes. */
 	function finish(task: AutomationTask, run: AutomationRun, end: AgentEnd): void {
-		const finished = record(run, { endedAt: now(), ...end, ...reviewStart(task, end.status) });
+		const at = now();
+		// A handed-over event task waits again from this end: the wait it starts, Log position and
+		// all, goes in the same record line, so a board stopped before it is saved loses nothing.
+		const handoff = latest(run).handoff;
+		const next = task.event && handoff?.status === 'handed' ? { handoff: { ...handoff, next: startWait(task.event.event, at) } } : {};
+		const finished = record(run, { endedAt: at, ...end, ...next, ...reviewStart(task, end.status) });
 		publish();
 		ended(task, finished);
 	}
@@ -1460,7 +1465,7 @@ export function createAutomation(options: {
 			const runEnd = last.endedAt ?? at;
 			if (wait.since < runEnd) {
 				// Waiting again from the end of the run: what happened while it ran does not count.
-				wait = startWait(settings.event, runEnd);
+				wait = last.handoff.next ?? startWait(settings.event, runEnd);
 				// The run went on past the deadline: no timeout handoff. Only a board that was off
 				// when the run ended still looks once for an event between that end and the deadline.
 				if (runEnd >= deadlineAt || task.paused) {
@@ -1471,7 +1476,7 @@ export function createAutomation(options: {
 				} else if (at >= deadlineAt) {
 					// The run's job is still finishing: looked at on the next check.
 					if (busy(task.id)) return false;
-					// A Log file is marked at its length now: lines written while the board was off are not seen.
+					// The Log position is the one marked at the run's end, so lines written since are seen.
 					const look = lookAt(settings.event, wait, at, procDir);
 					if (look.occurred) {
 						handOff(task, look.occurred);

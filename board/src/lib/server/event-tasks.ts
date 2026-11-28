@@ -247,14 +247,19 @@ function lookAtLog(event: Extract<EventSpec, { type: 'log' }>, wait: EventWait, 
 				};
 			}
 		}
-		// A line with no end yet is read again once it has one; one longer than a whole read is
-		// looked at as it is and passed, so the file is never stuck on it (text across the cut, or a
-		// character split by it, is not matched there).
+		// A line with no end yet is read again once it has one. One longer than a whole read is looked
+		// at as it is and passed, all but its last bytes as long as the text: the next read starts
+		// there, so the text found across the cut is still seen, and the file is never stuck on it.
 		if (lineStart === 0 && read >= LOG_READ_MAX) {
 			const piece = buffer.subarray(0, read).toString('utf8');
-			if ((event.caseSensitive ? piece : piece.toLowerCase()).includes(wanted))
-				return { wait: { ...clean, log: { dev: stat.dev, ino: stat.ino, offset: offset + read } }, occurred: { cause: 'event', at, details: [`Log 檔：${event.path}`, `比對到的那一行：${piece.slice(0, MAX_MATCHED_LINE)}…`, `看到的時間：${taipeiText(at)}（台灣時間）`] } };
-			lineStart = read;
+			const found = (event.caseSensitive ? piece : piece.toLowerCase()).indexOf(wanted);
+			if (found >= 0) {
+				const from = Math.max(0, found - MAX_MATCHED_LINE / 2);
+				const shown = `…${piece.slice(from, from + MAX_MATCHED_LINE)}…`;
+				return { wait: { ...clean, log: { dev: stat.dev, ino: stat.ino, offset: offset + read } }, occurred: { cause: 'event', at, details: [`Log 檔：${event.path}`, `比對到的那一行：${shown}`, `看到的時間：${taipeiText(at)}（台灣時間）`] } };
+			}
+			const overlap = Math.max(Buffer.byteLength(event.text), Buffer.byteLength(wanted)) - 1;
+			lineStart = read - overlap;
 		}
 		offset += lineStart;
 		return { wait: { ...clean, log: { dev: stat.dev, ino: stat.ino, offset } } };

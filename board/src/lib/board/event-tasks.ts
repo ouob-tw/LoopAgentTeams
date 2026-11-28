@@ -76,6 +76,8 @@ export interface RunHandoff {
 	reason?: string;
 	/** When it became 已接手, 接手失敗 or 接手結果不明. */
 	settledAt?: number;
+	/** Written with the end of an 已接手 attempt's run: the wait a reusable task starts from then. */
+	next?: EventWait;
 }
 
 /** How an event task ended for good. */
