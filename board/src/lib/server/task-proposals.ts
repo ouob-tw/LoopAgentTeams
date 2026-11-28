@@ -635,9 +635,11 @@ export function createTaskProposals(options: {
 		withdraw: store.withdraw,
 		challenge: approvals.challenge,
 		async approve(id, input, device, https) {
-			const reply = await approvals.approve(id, input, device, https);
-			changed();
-			return reply;
+			try {
+				return await approvals.approve(id, input, device, https);
+			} finally {
+				changed();
+			}
 		},
 		reject(id, input, device) {
 			if (device.test) return TEST_DEVICE_REFUSED;

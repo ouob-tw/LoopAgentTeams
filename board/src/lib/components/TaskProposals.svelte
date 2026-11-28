@@ -18,11 +18,11 @@
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { Explainer } from '#lib/board/explain.svelte.ts';
 	import { passkeyBlocked, passkeyRefusal } from '#lib/board/passkey-here.ts';
-	import { clampBox, readBox, type PdBox } from '#lib/board/pd.ts';
-	import { remember, rememberedText } from '#lib/board/prefs.ts';
+	import { FloatingBox } from '#lib/board/floating-box.svelte.ts';
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import { SCOPE_KEYS, SCOPE_LABEL } from '#lib/board/unattended.ts';
 	import {
+		approvedTaskId,
 		MAX_REJECT_REASON,
 		PROPOSALS_WINDOW_KEY,
 		proposerName,
@@ -110,47 +110,8 @@
 		return () => container.removeEventListener('message', opened);
 	});
 
-	/** The wide layout floats and moves; a phone's sheet is the page's to place. */
-	let wide = $state(false);
-	let box = $state<PdBox | null>(null);
-	const view = () => ({ w: window.innerWidth, h: window.innerHeight });
-	onMount(() => {
-		const query = matchMedia('(min-width: 761px)');
-		const saved = readBox(rememberedText(PROPOSALS_WINDOW_KEY));
-		box = saved && clampBox(saved, view());
-		const fit = () => {
-			wide = query.matches;
-			if (box) box = clampBox(box, view());
-		};
-		fit();
-		query.addEventListener('change', fit);
-		addEventListener('resize', fit);
-		return () => {
-			query.removeEventListener('change', fit);
-			removeEventListener('resize', fit);
-		};
-	});
-	let gesture = $state<{ resize: boolean; x: number; y: number; from: PdBox } | null>(null);
-	function begin(event: PointerEvent, resize: boolean) {
-		if (!wide || !panel || event.button !== 0 || (!resize && (event.target as Element).closest('button'))) return;
-		const { left, top, width, height } = panel.getBoundingClientRect();
-		gesture = { resize, x: event.clientX, y: event.clientY, from: box ?? { x: left, y: top, w: width, h: height } };
-		(event.currentTarget as Element).setPointerCapture(event.pointerId);
-		event.preventDefault();
-	}
-	function follow(event: PointerEvent) {
-		if (!gesture) return;
-		const { from, resize } = gesture;
-		const dx = event.clientX - gesture.x;
-		const dy = event.clientY - gesture.y;
-		box = clampBox(resize ? { ...from, w: from.w + dx, h: from.h + dy } : { ...from, x: from.x + dx, y: from.y + dy }, view());
-	}
-	function end() {
-		if (!gesture) return;
-		gesture = null;
-		if (box) remember(PROPOSALS_WINDOW_KEY, JSON.stringify(box));
-	}
-	const place = $derived(wide && box ? `left: ${box.x}px; top: ${box.y}px; width: ${box.w}px; height: ${box.h}px;` : undefined);
+	/** Floats, moves and resizes on a wide screen; a phone's sheet is the page's to place. */
+	const floating = new FloatingBox(PROPOSALS_WINDOW_KEY, () => panel);
 
 	/** Why this page cannot sign with the board's passkey (another address, no https, no WebAuthn);
 	 *  empty when it can. Read in the browser. */
@@ -184,7 +145,7 @@
 			return;
 		}
 		const { error, reason, result: ended } = (result.body ?? {}) as { error?: string; reason?: string; result?: ResultStatus };
-		if (error === 'ended' && ended) return settle(proposal, ended);
+		if (error === 'ended' && ended) return settle(proposal, ended, ended === 'approved' ? { taskId: approvedTaskId(proposal.id) } : {});
 		if (error === 'not-found') return settle(proposal, 'withdrawn', { reason: '這個提案已經不在了' });
 		if (error === 'passkey_unavailable') failures[proposal.id] = blocked || reason || '這個網址不能用 passkey。';
 		else failures[proposal.id] = typeof reason === 'string' && reason ? reason : '看板沒有處理，請稍後再按一次。';
@@ -223,14 +184,16 @@
 		failures[id] = '';
 		busy[id] = 'reject';
 		held[id] = proposal;
-		const reason = (rejecting[id] ?? '').trim();
-		const done = await post<{ status: ResultStatus; reason?: string }>(`/api/task-proposals/${id}/reject`, reason ? { reason } : {});
-		if (done.ok) {
+		try {
+			const reason = (rejecting[id] ?? '').trim();
+			const done = await post<{ status: ResultStatus; reason?: string }>(`/api/task-proposals/${id}/reject`, reason ? { reason } : {});
+			if (!done.ok) return refused(proposal, done);
 			delete rejecting[id];
 			settle(proposal, 'rejected', { reason: done.value.reason });
-		} else refused(proposal, done);
-		delete busy[id];
-		delete held[id];
+		} finally {
+			delete busy[id];
+			delete held[id];
+		}
 	}
 
 	/** What a decided card says, and whether it went the user's way. */
@@ -251,9 +214,9 @@
 
 {#if cards.length}
 	{#if open}
-		<section class="tp" class:moving={gesture} style={place} aria-label="任務提案待核准" tabindex="-1" bind:this={panel}>
+		<section class="tp" class:moving={floating.gesture} style={floating.place} aria-label="任務提案待核准" tabindex="-1" bind:this={panel}>
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
-			<header class:handle={wide} onpointerdown={(event) => begin(event, false)} onpointermove={follow} onpointerup={end} onpointercancel={end}>
+			<header class:handle={floating.wide} onpointerdown={(event) => floating.begin(event, false)} onpointermove={floating.follow} onpointerup={floating.end} onpointercancel={floating.end}>
 				<h2>任務提案待核准 <span class="count">{waiting.length}</span></h2>
 				{#if blocked}
 					<button
@@ -397,8 +360,8 @@
 					</li>
 				{/each}
 			</ul>
-			{#if wide}
-				<span class="grip" aria-hidden="true" onpointerdown={(event) => begin(event, true)} onpointermove={follow} onpointerup={end} onpointercancel={end}></span>
+			{#if floating.wide}
+				<span class="grip" aria-hidden="true" onpointerdown={(event) => floating.begin(event, true)} onpointermove={floating.follow} onpointerup={floating.end} onpointercancel={floating.end}></span>
 			{/if}
 		</section>
 		{#if explainer.tip}

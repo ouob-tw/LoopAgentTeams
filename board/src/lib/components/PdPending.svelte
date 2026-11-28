@@ -27,11 +27,9 @@
 		callerNote,
 		callerParts,
 		callerText,
-		clampBox,
 		destroysAttachment,
 		PD_WINDOW_KEY,
 		pdNotice,
-		readBox,
 		requestLabel,
 		requestOptions,
 		notificationText,
@@ -40,13 +38,12 @@
 		summaryText,
 		timeText,
 		typeLabel,
-		type PdBox,
 		type PdChallenge,
 		type PdRequest,
 		type PdSnapshot
 	} from '#lib/board/pd.ts';
 	import { Explainer } from '#lib/board/explain.svelte.ts';
-	import { remember, rememberedText } from '#lib/board/prefs.ts';
+	import { FloatingBox } from '#lib/board/floating-box.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import ExplainTip from './ExplainTip.svelte';
 
@@ -107,51 +104,8 @@
 	/** Open it and put the focus on it: where a phone's banner leads. */
 	export const reveal = () => show(true);
 
-	/** The wide layout, where it floats and moves; a phone shows it as a sheet the page places. */
-	let wide = $state(false);
-	/** Its place once moved or resized, inside the window; null for the page's default over the
-	 *  middle column. */
-	let box = $state<PdBox | null>(null);
-	const view = () => ({ w: window.innerWidth, h: window.innerHeight });
-	onMount(() => {
-		const query = matchMedia('(min-width: 761px)');
-		const saved = readBox(rememberedText(PD_WINDOW_KEY));
-		box = saved && clampBox(saved, view());
-		const fit = () => {
-			wide = query.matches;
-			if (box) box = clampBox(box, view());
-		};
-		fit();
-		query.addEventListener('change', fit);
-		addEventListener('resize', fit);
-		return () => {
-			query.removeEventListener('change', fit);
-			removeEventListener('resize', fit);
-		};
-	});
-
-	/** A drag of the heading or the corner under way: where the pointer and the box started. */
-	let gesture = $state<{ resize: boolean; x: number; y: number; from: PdBox } | null>(null);
-	function begin(event: PointerEvent, resize: boolean) {
-		if (!wide || !panel || event.button !== 0 || (!resize && (event.target as Element).closest('button'))) return;
-		const { left, top, width, height } = panel.getBoundingClientRect();
-		gesture = { resize, x: event.clientX, y: event.clientY, from: box ?? { x: left, y: top, w: width, h: height } };
-		(event.currentTarget as Element).setPointerCapture(event.pointerId);
-		event.preventDefault();
-	}
-	function follow(event: PointerEvent) {
-		if (!gesture) return;
-		const { from, resize } = gesture;
-		const dx = event.clientX - gesture.x;
-		const dy = event.clientY - gesture.y;
-		box = clampBox(resize ? { ...from, w: from.w + dx, h: from.h + dy } : { ...from, x: from.x + dx, y: from.y + dy }, view());
-	}
-	function end() {
-		if (!gesture) return;
-		gesture = null;
-		if (box) remember(PD_WINDOW_KEY, JSON.stringify(box));
-	}
-	const place = $derived(wide && box ? `left: ${box.x}px; top: ${box.y}px; width: ${box.w}px; height: ${box.h}px;` : undefined);
+	/** Floats, moves and resizes on a wide screen; a phone's sheet is the page's to place. */
+	const floating = new FloatingBox(PD_WINDOW_KEY, () => panel);
 
 	/** Whether this page can sign with the passkey, which is bound to ouob.net: only a secure page
 	 *  under it, such as https://lat.ouob.net, in a browser with WebAuthn. Read in the browser. */
@@ -287,11 +241,11 @@
 
 {#if (requests.length || notice) && pd}
 	{#if open}
-		<section class="pd" class:moving={gesture} style={place} aria-label="pd 待核准" tabindex="-1" bind:this={panel}>
+		<section class="pd" class:moving={floating.gesture} style={floating.place} aria-label="pd 待核准" tabindex="-1" bind:this={panel}>
 			<!-- The heading drags the window in the wide layout; its buttons stay buttons. Dragging is a
 			     pointer's convenience: the window works where it opens, and stays on screen. -->
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
-			<header class:handle={wide} onpointerdown={(event) => begin(event, false)} onpointermove={follow} onpointerup={end} onpointercancel={end}>
+			<header class:handle={floating.wide} onpointerdown={(event) => floating.begin(event, false)} onpointermove={floating.follow} onpointerup={floating.end} onpointercancel={floating.end}>
 				<h2>pd 待核准 <span class="count">{requests.length}</span></h2>
 				{#if !passkeyHere}
 					<button
@@ -410,8 +364,8 @@
 					</li>
 				{/each}
 			</ul>
-			{#if wide}
-				<span class="grip" aria-hidden="true" onpointerdown={(event) => begin(event, true)} onpointermove={follow} onpointerup={end} onpointercancel={end}></span>
+			{#if floating.wide}
+				<span class="grip" aria-hidden="true" onpointerdown={(event) => floating.begin(event, true)} onpointermove={floating.follow} onpointerup={floating.end} onpointercancel={floating.end}></span>
 			{/if}
 		</section>
 		{#if explainer.tip}

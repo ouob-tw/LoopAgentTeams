@@ -246,6 +246,10 @@ for (const size of SIZES) {
 		await press(`[data-proposal="${grantId}"] button.link`);
 		await tab.until(`document.querySelector('[data-task="proposal-${grantId}"] [data-source]') !== null`, 'the task page');
 		expect(await tab.eval(`document.querySelector('[data-task="proposal-${grantId}"] [data-source]').textContent.trim()`)).toMatch(/^由 grp-vasuno 提出、\d\d\/\d\d \d\d:\d\d 以 passkey 核准$/);
+		// Its brief is the board's copy as approved, and says so.
+		await press('.detail .task header button.more');
+		await tab.until(`document.querySelector('.detail .task .approved-copy') !== null`, 'the settings open');
+		expect(await tab.eval(`document.querySelector('.detail .task .approved-copy').textContent`)).toBe('（核准時的版本）');
 		await frames(`${size.width}-5-task-source`);
 
 		// 稍後 folds it to a badge (a strip under the bar on a phone) that opens it again.
@@ -257,10 +261,45 @@ for (const size of SIZES) {
 		const folded = size.width < 761 ? '.proposals-banner' : '.tp-badge';
 		await tab.until(`document.querySelector('${folded}')?.offsetParent !== null && document.querySelector('section.tp') === null`, 'the window folded');
 		expect(await tab.eval(`document.querySelector('${folded}').innerText`)).toContain('任務提案待核准');
+		// Big enough to read and to press.
+		expect(await tab.eval(`(() => { const r = document.querySelector('${folded}').getBoundingClientRect(); return r.height >= 44 && parseFloat(getComputedStyle(document.querySelector('${folded}')).fontSize) >= 16; })()`)).toBe(true);
 		await frames(`${size.width}-6-folded`);
 		await tab.pointerClick(folded);
 		await tab.until(`document.querySelectorAll('section.tp [data-proposal]').length === 1`, 'only the waiting card after folding');
 		expect(await tab.eval(`${card(checksId)}.dataset.state`)).toBe('pending');
+
+		if (size.width < 761) return;
+		// On a wide screen its heading drags it and its corner resizes it; the place is kept here.
+		const rect = () => tab.eval<{ x: number; y: number; w: number; h: number }>(`(() => { const r = document.querySelector('section.tp').getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; })()`);
+		const drag = async (from: { x: number; y: number }, by: { x: number; y: number }) => {
+			for (const [type, at] of [
+				['mousePressed', from],
+				['mouseMoved', { x: from.x + by.x / 2, y: from.y + by.y / 2 }],
+				['mouseMoved', { x: from.x + by.x, y: from.y + by.y }],
+				['mouseReleased', { x: from.x + by.x, y: from.y + by.y }]
+			] as const)
+				await tab.send('Input.dispatchMouseEvent', { type, x: at.x, y: at.y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1 });
+		};
+		const before = await rect();
+		await drag({ x: before.x + before.w - 4, y: before.y + before.h - 4 }, { x: 60, y: -100 });
+		const resized = await rect();
+		for (const [got, want] of [
+			[resized.x - before.x, 0],
+			[resized.w - before.w, 60],
+			[resized.h - before.h, -100]
+		])
+			expect(Math.abs(got - want)).toBeLessThanOrEqual(3);
+		await drag({ x: resized.x + 40, y: resized.y + 20 }, { x: 200, y: 30 });
+		const moved = await rect();
+		// Within a few pixels: the pointer's first move picks the window up.
+		for (const [got, want] of [
+			[moved.x - resized.x, 200],
+			[moved.y - resized.y, 30],
+			[moved.w - resized.w, 0]
+		])
+			expect(Math.abs(got - want)).toBeLessThanOrEqual(3);
+		const kept = JSON.parse((await tab.eval(`localStorage.getItem('lat-board-proposals-window')`)) as string);
+		for (const side of ['x', 'y', 'w', 'h'] as const) expect(Math.abs(kept[side] - moved[side])).toBeLessThanOrEqual(5);
 	});
 }
 

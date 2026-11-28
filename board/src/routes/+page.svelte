@@ -41,6 +41,7 @@
 	import NewController from '#lib/components/NewController.svelte';
 	import PdPending from '#lib/components/PdPending.svelte';
 	import TaskProposals from '#lib/components/TaskProposals.svelte';
+	import { WIDE_QUERY } from '#lib/board/floating-box.svelte.ts';
 	import { pdLooking } from '#lib/board/pd-look.svelte.ts';
 	import { pdNotice, type PdRequest } from '#lib/board/pd.ts';
 	import QuotaList from '#lib/components/QuotaList.svelte';
@@ -684,7 +685,7 @@
 				onopentask={(id) => {
 					navigation.setMiddle('automation');
 					openTask(id);
-					if (!matchMedia('(min-width: 761px)').matches) proposalsOpen = false;
+					if (!matchMedia(WIDE_QUERY).matches) proposalsOpen = false;
 				}}
 			/>
 			<!-- Drawn as tabs; a pair of pressed buttons to assistive technology, like the inbox's own
@@ -1467,7 +1468,7 @@
 	/* The strip under a phone's bar while pd requests wait folded: it hangs from the sticky bar so it
 	   stays with it, and the bar keeps room for it below so it covers nothing. Shown on a phone only. */
 	.topbar {
-		--pd-banner-h: calc(2.6 * max(0.85rem, var(--min-font, 0px)));
+		--pd-banner-h: max(44px, calc(2.75 * max(1rem, var(--min-font, 0px))));
 	}
 	.pd-banner {
 		display: none;
@@ -1483,7 +1484,7 @@
 		border-bottom: 1px solid var(--line);
 		border-radius: 0;
 		background: color-mix(in srgb, var(--warn) 9%, var(--bg));
-		font-size: max(0.85rem, var(--min-font, 0px));
+		font-size: max(1rem, var(--min-font, 0px));
 		font-weight: 700;
 		text-align: left;
 	}
@@ -1502,7 +1503,7 @@
 		background: var(--warn);
 		color: var(--bg);
 		font-family: var(--mono);
-		font-size: max(0.75rem, var(--min-font, 0px));
+		font-size: max(1rem, var(--min-font, 0px));
 		line-height: 1.5;
 		text-align: center;
 	}

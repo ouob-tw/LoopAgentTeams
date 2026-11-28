@@ -86,6 +86,15 @@
       "tests": [
         "board/tests/server/automation-alerts.test.ts"
       ]
+    },
+    {
+      "paths": [
+        "board/src/lib/board/floating-box.svelte.ts"
+      ],
+      "tests": [
+        "board/tests/browser/task-proposals-page.test.ts",
+        "board/tests/browser/pd-page.test.ts"
+      ]
     }
   ]
 }
