@@ -1,7 +1,8 @@
 <script lang="ts">
 	// One task in the content column: its settings, the checklist and 刪除任務 folded behind
 	// 詳細資料 (closed each time a task is opened), then every run kept, newest first, each with how
-	// it was started, when, how it ended and why, the fixed checks one by one and the output it left. 立即執行 (停止這次 while it runs), 暫停／恢復 and 編輯 sit at the top;
+	// it was started, when, how it ended and why, the fixed checks one by one and the output it left.
+	// 立即執行 (停止這次 while it runs), 暫停／恢復 and 編輯 sit at the top;
 	// missed periods above them, with 立即執行 and 這期就算了. An agent run links to its agent's page:
 	// the live screen while it runs, the conversation after. 刪除任務 sits under the settings: it asks
 	// first, and is off while a run is unfinished.
