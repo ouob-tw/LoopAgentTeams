@@ -9,6 +9,7 @@ import { clientAddress, viaHttps } from '#lib/server/client-address.ts';
 import { findDevice, markSeen, saveSeen } from '#lib/server/devices.ts';
 import { isDemoPath, securityHeaders, type DemoAnswer } from '#lib/server/security-headers.ts';
 import { answerDemoAddress } from '#lib/server/demo-site.ts';
+import { isSharedDemo } from '#lib/server/demo-share.ts';
 import { DEMO_MARK } from '#lib/server/demo-address.ts';
 import { testDeviceRefusal } from '#lib/server/test-device.ts';
 import { exceptionFields, log, withRequestId } from '#lib/server/log.ts';
@@ -30,7 +31,8 @@ export const init: ServerInit = () => {
 		});
 };
 
-// Everything except the login screens and their endpoints needs a logged-in device.
+// Everything except the login screens and their endpoints needs a logged-in device (and reading a
+// shared demo page: sharedDemoRead).
 const OPEN_PATHS = new Set([
 	'/login',
 	'/api/login',
@@ -95,6 +97,14 @@ async function logFailure(event: RequestEvent, response: Response) {
 }
 
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/** A file of a shared demo read on the board's own /demo (demo-share.ts): it needs no login. Only
+ *  GET and HEAD of the demo route itself, under that demo's folder; everything else still does. The
+ *  address is read as sent, as the route reads it. */
+const sharedDemoRead = (event: RequestEvent, stateDir: string) =>
+	(event.request.method === 'GET' || event.request.method === 'HEAD') &&
+	event.route.id === '/demo/[...path]' &&
+	isSharedDemo(stateDir, event.url.pathname.replace(/^\/demo\/?/, ''));
 
 const seeOther = (location: string) => new Response(null, { status: 303, headers: { location } });
 
@@ -190,7 +200,7 @@ const handleAllowed: Handle = ({ event, resolve }) => {
 			event.locals.device = device;
 
 			const path = event.url.pathname;
-			if (!device && !OPEN_PATHS.has(path)) {
+			if (!device && !OPEN_PATHS.has(path) && !sharedDemoRead(event, board.config.stateDir)) {
 				if (path.startsWith('/api/')) return json({ error: 'unpaired' }, { status: 401 });
 				if (openedFromOutside(event.request)) return reloadFromHere();
 				return seeOther('/login');
