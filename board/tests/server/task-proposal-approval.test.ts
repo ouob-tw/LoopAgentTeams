@@ -57,10 +57,20 @@ interface Setup {
 	passkeyId: string;
 }
 
-/** A logged-in device's cookie and ID. */
+/** The server's log lines with this name once there are `count` of them: what it writes reaches
+ *  the test's pipe a little after the response. */
+const linesOf = (board: Fixture, message: string, count: number) =>
+	until(() => {
+		const lines = logged(board.serverOutput(), message);
+		return lines.length >= count && lines;
+	}, 5_000, `${count} ${message} line(s)`);
+
+/** A logged-in device's cookie and ID, from its login line once the server's output has it. */
 async function loggedIn(board: Fixture, label: string) {
+	const before = logged(board.serverOutput(), 'login_totp').length;
 	const cookie = await board.login(label);
-	return { cookie, deviceId: String(logged(board.serverOutput(), 'login_totp').at(-1)!.device_id) };
+	const line = await until(() => logged(board.serverOutput(), 'login_totp')[before], 5_000, `the login line of ${label}`);
+	return { cookie, deviceId: String(line.device_id) };
 }
 
 /** A board at the https address with these agents, a logged-in device and one board passkey. */
@@ -149,8 +159,8 @@ test('approving with the board passkey makes one task equal to the proposal, wit
 	expect(message.agentLike).toEqual([]);
 	expect((await card(board, cookie, id)).notify).toMatchObject({ attempt: 1, status: 'sent', to: 'grp-luna' });
 	// 登入紀錄 has the challenge and the approval, with the passkey that signed.
-	expect(logged(board.serverOutput(), 'task_proposal_challenge')).toMatchObject([{ result: 'start', device_id: s.deviceId }]);
-	expect(logged(board.serverOutput(), 'task_proposal_approve')).toMatchObject([{ result: 'success', device_id: s.deviceId, passkey_id: s.passkeyId }]);
+	expect(await linesOf(board, 'task_proposal_challenge', 1)).toMatchObject([{ result: 'start', device_id: s.deviceId }]);
+	expect(await linesOf(board, 'task_proposal_approve', 1)).toMatchObject([{ result: 'success', device_id: s.deviceId, passkey_id: s.passkeyId }]);
 
 	// Once only: the same answer again, or another approval, makes nothing more.
 	expect((await approve(board, cookie, id, s.passkey.answer(options))).status).toBe(409);
@@ -186,7 +196,7 @@ test('a challenge works once, for 5 minutes, for its proposal and login, signed 
 	const used = passkey.answer(await challengeFor(board, cookie, first));
 	expect(await failure(await approve(board, cookie, second, used))).toEqual([409, 'approval_failed']);
 	expect(await failure(await approve(board, cookie, first, used))).toEqual([409, 'approval_failed']);
-	expect(logged(board.serverOutput(), 'task_proposal_approval_refused').map((line) => line.cause)).toEqual([
+	expect((await linesOf(board, 'task_proposal_approval_refused', 9)).map((line) => line.cause)).toEqual([
 		'other-proposal',
 		'other-login',
 		'expired-challenge',
@@ -479,7 +489,7 @@ test('a damaged saved approval ends 核准失敗 with no task and a push; a task
 	writeFileSync(resultPath(board, retried), JSON.stringify({ ...approvingAgain, status: 'approving' }));
 	chmodSync(proposalsDir(board), 0o500);
 	expect((await card(board, cookie, retried)).status).toBe('approving');
-	expect(logged(board.serverOutput(), 'task_proposal_result_unsaved').length).toBeGreaterThan(0);
+	await linesOf(board, 'task_proposal_result_unsaved', 1);
 	chmodSync(proposalsDir(board), 0o700);
 	expect((await card(board, cookie, retried)).result).toMatchObject({ status: 'approved', taskId: `proposal-${retried}` });
 	expect((await tasksOf(board, cookie)).map((task) => task.id)).toEqual([`proposal-${retried}`]);
@@ -564,7 +574,7 @@ test('each result message goes once, to the proposer found by its session: a ren
 	expect((await notified(board, ids[4], 'failed')).reason).toBe('hcom 傳送失敗：hcom is down');
 	expect(resultOf(board, ids[4]).status).toBe('rejected');
 	expect(sends(board).map((sent) => sent.args[1])).toEqual(['@grp-luna2', '@grp-luna']);
-	expect(logged(board.serverOutput(), 'task_proposal_notify_skipped').map((line) => line.proposal_id)).toEqual([ids[1], ids[2], ids[3]]);
+	expect((await linesOf(board, 'task_proposal_notify_skipped', 3)).map((line) => line.proposal_id)).toEqual([ids[1], ids[2], ids[3]]);
 
 	// An invalid proposal is told at once; a withdrawal never.
 	board.setHcom({ agents: [listed(luna)] });
@@ -599,7 +609,7 @@ test('a board stopped while it sends a result message, before or after the send,
 	await board.stop();
 	await board.start();
 	expect(notifyOf(board, after)).toMatchObject({ status: 'unknown' });
-	expect(logged(board.serverOutput(), 'task_proposal_notify_unknown').map((line) => line.proposal_id)).toEqual([before, after]);
+	expect((await linesOf(board, 'task_proposal_notify_unknown', 2)).map((line) => line.proposal_id)).toEqual([before, after]);
 	await Bun.sleep(3_500);
 	expect(sends(board)).toHaveLength(1);
 	expect(resultOf(board, before).status).toBe('rejected');
