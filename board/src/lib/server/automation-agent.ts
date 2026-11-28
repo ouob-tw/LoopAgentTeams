@@ -384,7 +384,13 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 		// A Claude agent that ended its turn with background work or a Monitor still going is woken
 		// when that work is done (#750): the run goes on, its next reply judged, the limit as always.
 		// The same reply is looked at again each time, so with the work over and no new turn it fails.
-		if (spec.client === 'claude' && (await host.backgroundGoesOn(sessionId))) continue;
+		if (spec.client === 'claude') {
+			if (await host.backgroundGoesOn(sessionId)) continue;
+			// Looked at again after that read, right before closing: a newer reply meanwhile (the woken
+			// turn's DONE) is judged on the next look instead.
+			const latest = await host.lastReply(spec.client, sessionId);
+			if (!latest.ok || latest.seq !== reply.seq) continue;
+		}
 		return end({ status: 'failed', reason: `回合結束，但最後一行不是 ${watched.ending ?? 'DONE、FAILED 或 ASK'}：${clip(reply.text.trim().split('\n').at(-1) ?? '')}` });
 	}
 }

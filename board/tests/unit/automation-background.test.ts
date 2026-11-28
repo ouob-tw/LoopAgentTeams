@@ -162,6 +162,15 @@ test('a turn ending on no verdict with background work going leaves the run on a
 	}
 });
 
+test('a newer reply written while the background read ran is judged, not the reply before it', async () => {
+	const clock = { now: START };
+	const replies = [WAITING];
+	// The woken turn's DONE lands while the record is read, its work over.
+	const { host, closed } = fakeHost(clock, { replies, background: () => (replies.push('報告寄出了。\nDONE'), false) });
+	expect(await watchAgent(host, watched(clock))).toEqual({ status: 'success' });
+	expect(closed).toEqual([NAME]);
+});
+
 test('background work still going past the limit ends the run as a timeout', async () => {
 	const clock = { now: START };
 	const { host, closed } = fakeHost(clock, { replies: [WAITING], background: () => true });
