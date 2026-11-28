@@ -276,6 +276,27 @@ test('FAILED records its reason; a turn that ends on neither fails; only the las
 	}
 });
 
+test('a Claude turn ending on no verdict with background work going leaves the run on; the next DONE ends it (#750)', async () => {
+	const task = await create();
+	hcomPlan([{ name: 'auto-bg' }]);
+	const started = await runNow(task.id);
+	await launchedRun(task.id, 'auto-bg');
+	// Claude Code's own lines, read from the record the helper names: a background command started.
+	const own = (record: object) => appendFileSync(join(dir, 'transcripts', 's-auto-bg.jsonl'), JSON.stringify(record) + '\n');
+	userSaid('auto-bg', '讀取並照做');
+	own({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'Command running in background with ID: bupmshgz0.' }] }, toolUseResult: { stdout: '', backgroundTaskId: 'bupmshgz0' } });
+	reply('auto-bg', 'ClamAV 還在跑，我等它跑完再繼續。');
+	setStatus('auto-bg', 'listening');
+	await sleep(800);
+	expect((await runsOf(task.id))[0].status).toBe('running');
+	expect(listed('auto-bg')).toBe(true);
+	// Its notice wakes the agent; the turn after ends DONE.
+	own({ type: 'user', message: { role: 'user', content: '<task-notification>\n<task-id>bupmshgz0</task-id>\n<status>completed</status>\n</task-notification>' } });
+	reply('auto-bg', '報告寄出了。\nDONE');
+	expect((await ended(task.id, started.id)).status).toBe('success');
+	expect(listed('auto-bg')).toBe(false);
+});
+
 test('停止這次 and the limit close the agent, recorded as stopped and as a timeout', async () => {
 	const task = await create({ limitMinutes: 5 });
 	hcomPlan([{ name: 'auto-stop' }]);
