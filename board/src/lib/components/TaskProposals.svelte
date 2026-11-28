@@ -14,7 +14,8 @@
 	import X from '@lucide/svelte/icons/x';
 	import { startAuthentication } from '@simplewebauthn/browser';
 	import { request } from '#lib/board/api.ts';
-	import { clientName, EFFORT_TEXT, grantHours, scheduleText } from '#lib/board/automation.ts';
+	import { clientName, EFFORT_TEXT, grantHours, scheduleText, timeFormat, TIME_ZONE } from '#lib/board/automation.ts';
+	import { eventText } from '#lib/board/event-tasks.ts';
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { Explainer } from '#lib/board/explain.svelte.ts';
 	import { passkeyBlocked, passkeyRefusal } from '#lib/board/passkey-here.ts';
@@ -69,6 +70,10 @@
 			...outcomes.map((outcome) => ({ proposal: outcome.proposal, outcome }))
 		].sort((a, b) => a.proposal.createdAt.localeCompare(b.proposal.createdAt))
 	);
+
+	const taipei = timeFormat(TIME_ZONE);
+	/** An event task's deadline: whole hours as hours, else minutes. */
+	const durationText = (minutes: number) => (minutes % 60 ? `${minutes} 分鐘` : `${minutes / 60} 小時`);
 
 	/** What each card is doing now, and what went wrong on it last. */
 	let busy = $state<Record<string, 'approve' | 'reject'>>({});
@@ -297,8 +302,12 @@
 							{/if}
 							<dl>
 								<!-- An event task's schedule is a filler nothing runs by (#763): not shown as one. -->
-								{#if task.trigger === 'event'}
+								{#if task.trigger === 'event' && task.event}
 									{@render field('種類', 'Agent 任務（事件觸發）')}
+									{@render field('觸發條件', eventText(task.event.event, taipei.full))}
+									{@render field('期限', `核准後 ${durationText(task.event.deadlineMinutes)}`)}
+									{@render field('次數', task.event.repeat ? '可重複' : '一次')}
+									{@render field('接手方式', task.event.handoff === 'resume' ? '接回原主控' : '開新 Agent')}
 								{:else}
 									{@render field('種類', task.kind === 'agent' ? 'Agent 任務' : '指令任務')}
 									{@render field('排程', `${scheduleText(task.schedule, task.time)}（Asia/Taipei）`)}

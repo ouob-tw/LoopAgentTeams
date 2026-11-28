@@ -135,6 +135,15 @@
         "board/tests/browser/task-proposals-page.test.ts",
         "board/tests/browser/pd-page.test.ts"
       ]
+    },
+    {
+      "paths": [
+        "board/tests/event-task-fixture.ts",
+        "board/src/lib/board/event-tasks.ts"
+      ],
+      "tests": [
+        "board/tests/browser/task-proposals-page.test.ts"
+      ]
     }
   ]
 }

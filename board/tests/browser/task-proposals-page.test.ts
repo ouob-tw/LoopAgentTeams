@@ -14,6 +14,7 @@ import { sleep, type Fixture } from '../harness.ts';
 import { BOARD_STARTED, CHROME, holdRequests, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
 import { httpsProxy, PROXY_CHROME_ARGS } from '../https-proxy.ts';
 import { agentTask, commandTask, parsed, submit, withAgents, type AgentDouble } from '../task-proposal-fixture.ts';
+import { proposal as eventProposal } from '../event-task-fixture.ts';
 
 const SIZES = [
 	{ width: 1280, height: 800 },
@@ -269,6 +270,16 @@ for (const size of SIZES) {
 		await tab.pointerClick(folded);
 		await tab.until(`document.querySelectorAll('section.tp [data-proposal]').length === 1`, 'only the waiting card after folding');
 		expect(await tab.eval(`${card(checksId)}.dataset.state`)).toBe('pending');
+
+		// An event task from the controller: its event settings in place of the filler schedule.
+		const log = join(started.agents[0].folder, 'suite.log');
+		writeFileSync(log, '');
+		const event = parsed(await submit(fixture!, started.agents[0], eventProposal(started.agents[0].folder, { type: 'log', path: log, text: 'DONE' }, { name: '測試跑完後收尾' })));
+		expect(event).toMatchObject({ ok: true, status: 'pending' });
+		await tab.until(`${card(event.id)} !== null`, 'the event card');
+		const eventCard = (await tab.eval(`${card(event.id)}.innerText`)) as string;
+		for (const text of ['Agent 任務（事件觸發）', '觸發條件', `Log 檔 ${log} 出現「DONE」`, '期限', '核准後 24 小時', '次數', '一次', '接手方式', '開新 Agent']) expect(eventCard).toContain(text);
+		expect(eventCard).not.toContain('排程');
 
 		// A task that cannot be made (its folder went): 核准失敗 with the reason beside its mark.
 		rmSync(started.agents[1].folder, { recursive: true });
