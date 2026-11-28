@@ -2,7 +2,7 @@
 // wide and at a phone's width: one category shows at a time, 外觀 first; each setting stands in its
 // category and nowhere else; each category says whose it is; the list is left of the content, above it
 // on a phone; arrows, Home and End switch it. With LAT_BOARD_SHOTS set, each category is saved as a
-// frame, in the light and the dark theme.
+// frame, in the light and the dark theme. The account section also has synthetic published demos.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -53,6 +53,7 @@ beforeAll(async () => {
 		mkdirSync(folder, { recursive: true });
 		writeFileSync(join(folder, 'index.html'), '<!doctype html><title>Demo</title>');
 	}
+	// A local run can confine its fixture server to an assigned port; other runs use an ephemeral port.
 	fixture = await startFixture({ port: Number(process.env.LAT_SETTINGS_TEST_PORT || 0), env: { XDG_CONFIG_HOME: config, LAT_BOARD_DEMO_DIR: data } });
 	const cookie = await fixture.login();
 	const shared = await fixture.fetch('/api/demo-share', { cookie, method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'shared-demo', shared: true }) });
@@ -167,6 +168,15 @@ async function openSettings() {
 	await tab.until(`!!${DIALOG}.querySelector('section.preauth h4') && !!${DIALOG}.querySelector('section.unattended input') && !${DIALOG}.innerHTML.includes('讀取中')`, 'the settings read');
 }
 
+async function noMatch(frame: string) {
+	await tab.eval(`(() => { const input = ${DIALOG}.querySelector('section.share input[type=search]'); input.value = 'no-match-746'; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+	await tab.until(`${DIALOG}.querySelector('section.share li.note')?.textContent.includes('沒有符合')`, 'no match');
+	expect(await tab.eval(layoutProblems)).toEqual([]);
+	await shot(tab, frame);
+	await tab.eval(`(() => { const input = ${DIALOG}.querySelector('section.share input[type=search]'); input.value = ''; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+	await tab.until(`${DIALOG}.querySelectorAll('section.share input[role=switch]').length === 9`, 'rows restored');
+}
+
 async function key(name: string, code: number) {
 	for (const type of ['keyDown', 'keyUp']) await tab.send('Input.dispatchKeyEvent', { type, key: name, code: name, windowsVirtualKeyCode: code });
 }
@@ -205,13 +215,7 @@ for (const size of SIZES) {
 					expect(await tab.eval(`${DIALOG}.querySelector('section.share .count').textContent.includes('1') && !!${DIALOG}.querySelector('section.share input[type=search]')`)).toBe(true);
 				}
 				await shot(tab, `${size.width}-${at + 1}-${category.id}-${scheme}`);
-				if (category.id === 'account') {
-					await tab.eval(`(() => { const input = ${DIALOG}.querySelector('section.share input[type=search]'); input.value = 'no-match-746'; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-					await tab.until(`${DIALOG}.querySelector('section.share li.note')?.textContent.includes('沒有符合')`, 'no match');
-					expect(await tab.eval(layoutProblems)).toEqual([]);
-					await tab.eval(`(() => { const input = ${DIALOG}.querySelector('section.share input[type=search]'); input.value = ''; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-					await tab.until(`${DIALOG}.querySelectorAll('section.share input[role=switch]').length === 9`, 'rows restored');
-				}
+				if (category.id === 'account') await noMatch(`${size.width}-account-no-match-${scheme}`);
 			}
 			// The list stays under the finger as categories of other heights show.
 			expect(await listTop()).toBe(top);
@@ -263,11 +267,7 @@ for (const size of SIZES) {
 				if (category.id === 'account') {
 					await tab.eval(`${DIALOG}.querySelector('section.share').scrollIntoView({ block: 'start' })`);
 					await shot(tab, `${size.width}-account-largest-${scheme}`);
-					await tab.eval(`(() => { const input = ${DIALOG}.querySelector('section.share input[type=search]'); input.value = 'no-match-746'; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-					await tab.until(`${DIALOG}.querySelector('section.share li.note')?.textContent.includes('沒有符合')`, 'no match');
-					expect(await tab.eval(layoutProblems)).toEqual([]);
-					await tab.eval(`(() => { const input = ${DIALOG}.querySelector('section.share input[type=search]'); input.value = ''; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-					await tab.until(`${DIALOG}.querySelectorAll('section.share input[role=switch]').length === 9`, 'rows restored');
+					await noMatch(`${size.width}-account-largest-no-match-${scheme}`);
 				}
 			}
 		}
