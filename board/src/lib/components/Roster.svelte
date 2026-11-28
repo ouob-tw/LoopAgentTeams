@@ -116,5 +116,9 @@
 		.people > :global(.person) :global(.phase:not(.event-wait)) {
 			display: none;
 		}
+		/* At the 16px floor: cut with … in the narrow card, whole in its title. */
+		.people > :global(.person) :global(.phase.event-wait) {
+			font-size: max(1rem, var(--min-font, 0px));
+		}
 	}
 </style>
