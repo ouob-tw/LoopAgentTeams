@@ -6,9 +6,9 @@
 // the page's CSS can neither move nor restyle it; it sits under demo.py's image viewer (z-index
 // 2147483000), so an opened picture covers it. On a page with demo.py's switch bar, the bar's tabs
 // wrap short of it. Frames of the demo's own pages get none. The script is plain ASCII, so it reads
-// the same whatever the page's own encoding, and no content policy on the demo answers
-// (security-headers.ts) limits scripts.
-import { DEMO_SHARE_PARAM } from '#lib/board/settings-link.ts';
+// the same in any encoding that keeps ASCII as it is (UTF-16 does not), and no content policy on the
+// demo answers (security-headers.ts) limits scripts; a policy the page sets itself in a <meta> can.
+import { demoShareHref } from '#lib/board/demo-share-link.ts';
 
 /** What the button shows and where it leads. */
 export interface ShareButton {
@@ -16,9 +16,6 @@ export interface ShareButton {
 	board: string;
 	shared: boolean;
 }
-
-/** The board's address that opens settings at `name`'s switch. */
-export const shareSettingsHref = (board: string, name: string) => `${board}/?${DEMO_SHARE_PARAM}=${encodeURIComponent(name)}`;
 
 const SHARE_ICON =
 	'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg>';
@@ -56,7 +53,7 @@ export function shareButtonScript(name: string, button: ShareButton): string {
 	const label = button.shared ? '已分享' : '分享';
 	const markup =
 		`<style>${STYLE}</style>` +
-		`<a href="${shareSettingsHref(button.board, name)}"${button.shared ? ' class="shared"' : ''} title="到看板設定分享">` +
+		`<a href="${demoShareHref(button.board, name)}" target="_top"${button.shared ? ' class="shared"' : ''} title="到看板設定分享">` +
 		`${button.shared ? SHARED_ICON : SHARE_ICON}<span>${label}</span></a>`;
 	return (
 		'<script>(function(){if(window.top!==window.self)return;' +
@@ -64,15 +61,17 @@ export function shareButtonScript(name: string, button: ShareButton): string {
 		`h.setAttribute('style',${literal(HOST_STYLE)});` +
 		`h.attachShadow({mode:'closed'}).innerHTML=${literal(markup)};` +
 		'document.documentElement.appendChild(h);' +
-		// demo.py's own switch bar runs along the top: its tabs wrap short of the button, which lines up with their first row.
-		"var bar=document.getElementById('variants'),tab=bar&&bar.querySelector('button');if(!tab)return;" +
+		// demo.py's own switch bar, first in the body, runs along the top: its tabs wrap short of the
+		// button, which lines up with their first row (the bar sticks at the window's top).
+		"var bar=document.querySelector('body>nav#variants:first-child'),tab=bar&&bar.querySelector('button');if(!tab)return;" +
 		"var t=tab.getBoundingClientRect();bar.style.setProperty('padding-right',h.offsetWidth+16+'px','important');" +
-		"h.style.setProperty('top',Math.max(0,t.top-bar.getBoundingClientRect().top+(t.height-32)/2)+'px','important')})()</script>"
+		"h.style.setProperty('top','max('+Math.max(0,t.top-bar.getBoundingClientRect().top+(t.height-h.offsetHeight)/2)+'px,env(safe-area-inset-top))','important')})()</script>"
 	);
 }
 
 /** The page's bytes with the button's script after them: the parser puts what follows the document
- *  in its body, so it runs once the page above it is read, and nothing the page wrote moves. */
+ *  in its body, so it runs once the page above it is read. Nothing the page wrote moves, but for
+ *  demo.py's switch bar (above). */
 export function withShareButton(page: Buffer<ArrayBuffer>, name: string, button: ShareButton): Buffer<ArrayBuffer> {
 	return Buffer.concat([page, Buffer.from(shareButtonScript(name, button), 'ascii')]);
 }

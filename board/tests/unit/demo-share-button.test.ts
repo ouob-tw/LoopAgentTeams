@@ -1,8 +1,8 @@
 // The 分享 button's script on a logged-in viewer's demo page (#745): plain ASCII after the page's own
 // bytes, a link to the board's settings at that demo, 分享 or 已分享.
 import { expect, test } from 'bun:test';
-import { demoShareIn } from '#lib/board/settings-link.ts';
-import { shareButtonScript, shareSettingsHref, withShareButton } from '#lib/server/demo-share-button.ts';
+import { demoShareHref, demoShareIn } from '#lib/board/demo-share-link.ts';
+import { shareButtonScript, withShareButton } from '#lib/server/demo-share-button.ts';
 
 /** The markup the script puts in the button's shadow root, as the browser reads the literal. */
 function markup(script: string): string {
@@ -23,7 +23,8 @@ test('the page comes first, as published, and the script after it is ASCII alone
 
 test('the button leads to the board at the demo, reading 分享 or 已分享', () => {
 	const unshared = markup(shareButtonScript('d1', { board: 'https://board.example', shared: false }));
-	expect(unshared).toContain('href="https://board.example/?demo-share=d1"');
+	// The window itself, whatever <base target> the page sets: never a frame or a sandboxed popup.
+	expect(unshared).toContain('href="https://board.example/?demo-share=d1" target="_top"');
 	expect(unshared).toContain('<span>分享</span>');
 	const shared = markup(shareButtonScript('d1', { board: '', shared: true }));
 	expect(shared).toContain('href="/?demo-share=d1"');
@@ -32,7 +33,7 @@ test('the button leads to the board at the demo, reading 分享 or 已分享', (
 });
 
 test('the board reads back the demo its address names', () => {
-	expect(demoShareIn(new URL(shareSettingsHref('https://board.example', 'a.b-c_1')).search)).toBe('a.b-c_1');
+	expect(demoShareIn(new URL(demoShareHref('https://board.example', 'a.b-c_1')).search)).toBe('a.b-c_1');
 	expect(demoShareIn('?tab=agents')).toBeNull();
 	expect(demoShareIn('?demo-share=')).toBeNull();
 });

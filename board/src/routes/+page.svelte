@@ -53,7 +53,7 @@
 	import Roster from '#lib/components/Roster.svelte';
 	import RosterRail from '#lib/components/RosterRail.svelte';
 	import Settings from '#lib/components/Settings.svelte';
-	import { demoShareIn } from '#lib/board/settings-link.ts';
+	import { demoShareIn } from '#lib/board/demo-share-link.ts';
 	import UnattendedDrawer from '#lib/components/UnattendedDrawer.svelte';
 	import Toasts from '#lib/components/Toasts.svelte';
 	import DockSwipe from '#lib/components/DockSwipe.svelte';
@@ -111,7 +111,7 @@
 	// The address is read before the board's first history entry replaces it with the list's.
 	const demoShareAt = typeof location !== 'undefined' ? demoShareIn(location.search) : null;
 	onMount(() => {
-		if (demoShareAt) settings.open(undefined, demoShareAt);
+		if (demoShareAt) settings.open({ demo: demoShareAt });
 	});
 
 	/** Drag a column's right border. Only a real move changes the width, so a double click is free to reset it. */

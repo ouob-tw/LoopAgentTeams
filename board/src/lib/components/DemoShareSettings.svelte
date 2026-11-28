@@ -17,6 +17,8 @@
 	let filter = $state('');
 	/** The demo the dialog was opened at, marked until it opens again. */
 	let target = $state<string | null>(null);
+	/** That demo, when the list does not have it (deleted since). */
+	let gone = $state<string | null>(null);
 	let list = $state<HTMLUListElement>();
 	let read = 0;
 
@@ -27,6 +29,7 @@
 	export async function load(at?: string) {
 		const mine = ++read;
 		target = at ?? null;
+		gone = null;
 		if (at) filter = '';
 		const result = await request<{ demos: Demo[] }>('/api/demo-share');
 		if (mine !== read) return;
@@ -40,7 +43,10 @@
 	async function reveal(name: string) {
 		await tick();
 		const box = [...(list?.querySelectorAll<HTMLInputElement>('input[role="switch"]') ?? [])].find((input) => input.dataset.demo === name);
-		if (!box) return;
+		if (!box) {
+			gone = name;
+			return;
+		}
 		box.closest('li')?.scrollIntoView({ block: 'center' });
 		box.focus({ preventScroll: true });
 	}
@@ -70,6 +76,7 @@
 <section class="share">
 	<h4>示意頁分享{#if sharedCount}<span class="count">（已分享 {sharedCount} 頁）</span>{/if}</h4>
 	<p class="note">開啟的頁面，任何拿到網址的人不必登入都看得到。</p>
+	{#if gone}<p class="failed" role="status">清單裡沒有 {gone}，這一頁可能已經刪除。</p>{/if}
 	{#if refusal}
 		<div role="alert">
 			<p class="failed">{refusal}</p>

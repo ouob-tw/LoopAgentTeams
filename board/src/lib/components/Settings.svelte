@@ -29,13 +29,14 @@
 	let demoShare: DemoShareSettings;
 	let push: PushSettings;
 
-	/** With `anchor`, at that pre-authorization action, once the file is read; with `demo`, at that
-	 *  demo's 示意頁分享 switch instead, once the list is read. */
-	export function open(anchor?: string, demo?: string) {
+	/** With an anchor, at that pre-authorization action, once the file is read; with `{ demo }`, at
+	 *  that demo's 示意頁分享 switch, once the list is read. */
+	export function open(at?: string | { demo: string }) {
+		const anchor = typeof at === 'string' ? at : undefined;
 		if (!dialog.open) dialog.showModal();
 		void unattended.load();
 		void passkeys.load();
-		void demoShare.load(demo);
+		void demoShare.load(typeof at === 'object' ? at.demo : undefined);
 		void push.load();
 		void preauth.opened().then(() => {
 			if (anchor) void preauth.reveal(anchor);

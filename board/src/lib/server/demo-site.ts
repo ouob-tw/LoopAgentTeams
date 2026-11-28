@@ -128,12 +128,13 @@ export async function answerDemoAddress(config: BoardConfig, event: RequestEvent
 	if (path === LOGIN_PATH) return trade(config, event);
 	const rest = path.slice(1);
 	if (!isDemoAddress(rest)) return text('not found', 404);
+	// The board's address is set whenever the demo address is (config.ts).
+	const board = config.passkeySite!.origin;
 	const shared = isSharedDemo(config.stateDir, config.demoSiteDir, rest);
 	// A logged-in viewer's pages carry the 分享 button, which leads to the board's address.
-	if (loggedIn(config, event.cookies.get(DEMO_LOGIN_COOKIE))) return serveDemo(config.demoSiteDir, rest, event.url.search, '/', { board: config.passkeySite!.origin, shared });
+	if (loggedIn(config, event.cookies.get(DEMO_LOGIN_COOKIE))) return serveDemo(config.demoSiteDir, rest, event.url.search, '/', { board, shared });
 	if (shared) return serveDemo(config.demoSiteDir, rest, event.url.search, '/');
-	// The board's address is set whenever the demo address is (config.ts).
 	const { state, cookie } = newState(event);
 	const to = encodeURIComponent(path + event.url.search);
-	return seeOther(`${config.passkeySite!.origin}/demo-login?to=${to}&state=${state}`, [cookie]);
+	return seeOther(`${board}/demo-login?to=${to}&state=${state}`, [cookie]);
 }

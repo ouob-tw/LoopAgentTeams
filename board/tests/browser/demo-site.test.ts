@@ -171,33 +171,33 @@ test('a demo page shows its own pages in frames, each with its stylesheet and im
 	expect(tab.errors).toEqual([]);
 }, 30_000);
 
-test('the 分享 button stays at the top right as it is, clear of the switch bar’s tabs, and opens the board’s settings at the demo (#745)', async () => {
+test('the 分享 button stays at the top right as it is, clear of the switch bar’s tabs and the title, on a phone and a desktop, and opens the board’s settings at the demo (#745)', async () => {
 	const { tab } = await loggedInChrome('demo-site-button');
-	await tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
-	await tab.navigate(`${proxy.origin}/demo/d3/`);
-	await tab.until(`document.querySelector('lat-demo-share')`, 'the 分享 button');
-	const seen = await tab.eval<{ box: { right: number; width: number; height: number }; offRow: number; onTop: boolean; overTabs: string[]; title: boolean }>(`(() => {
-		const host = document.querySelector('lat-demo-share');
-		const box = host.getBoundingClientRect();
-		const meets = (r) => r.left < box.right && r.right > box.left && r.top < box.bottom && r.bottom > box.top;
-		return {
-			box: { right: Math.round(innerWidth - box.right), width: Math.round(box.width), height: Math.round(box.height) },
-			offRow: (() => { const first = document.querySelector('#variants button').getBoundingClientRect(); return Math.abs(first.top + first.height / 2 - (box.top + box.height / 2)); })(),
-			onTop: document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2) === host,
-			overTabs: [...document.querySelectorAll('#variants button')].filter((tab) => meets(tab.getBoundingClientRect())).map((tab) => tab.textContent),
-			title: meets(document.getElementById('title').getBoundingClientRect())
-		};
-	})()`);
-	expect(seen.onTop).toBe(true);
-	expect(seen.overTabs).toEqual([]);
-	expect(seen.title).toBe(false);
-	// The page's rules changed nothing: 32px high, its label shown, at the window's right, in line
-	// with the bar's first row of tabs.
-	expect(seen.box.height).toBe(32);
-	expect(seen.box.right).toBe(8);
-	expect(seen.offRow).toBeLessThanOrEqual(1);
-	expect(seen.box.width).toBeGreaterThan(60);
-	expect(seen.box.width).toBeLessThan(110);
+	for (const width of [390, 1280]) {
+		await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 844, deviceScaleFactor: 1, mobile: width < 600 });
+		await tab.navigate(`${proxy.origin}/demo/d3/`);
+		await tab.until(`document.querySelector('lat-demo-share')`, 'the 分享 button');
+		const seen = await tab.eval<{ box: { right: number; width: number; height: number }; offRow: number; onTop: boolean; overTabs: string[]; title: boolean }>(`(() => {
+			const host = document.querySelector('lat-demo-share');
+			const box = host.getBoundingClientRect();
+			const meets = (r) => r.left < box.right && r.right > box.left && r.top < box.bottom && r.bottom > box.top;
+			const first = document.querySelector('#variants button').getBoundingClientRect();
+			return {
+				box: { right: Math.round(innerWidth - box.right), width: Math.round(box.width), height: Math.round(box.height) },
+				offRow: Math.abs(first.top + first.height / 2 - (box.top + box.height / 2)),
+				onTop: document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2) === host,
+				overTabs: [...document.querySelectorAll('#variants button')].filter((tab) => meets(tab.getBoundingClientRect())).map((tab) => tab.textContent),
+				title: meets(document.getElementById('title').getBoundingClientRect())
+			};
+		})()`);
+		expect({ width, onTop: seen.onTop, overTabs: seen.overTabs, title: seen.title }).toEqual({ width, onTop: true, overTabs: [], title: false });
+		// The page's rules changed nothing: 32px high, its label shown, at the window's right, in line
+		// with the bar's first row of tabs.
+		expect({ width, height: seen.box.height, right: seen.box.right }).toEqual({ width, height: 32, right: 8 });
+		expect(seen.offRow).toBeLessThanOrEqual(1);
+		expect(seen.box.width).toBeGreaterThan(60);
+		expect(seen.box.width).toBeLessThan(110);
+	}
 	await tab.pointerClick('lat-demo-share');
 	await tab.until(`location.origin === ${JSON.stringify(proxy.origin)} && document.activeElement?.dataset?.demo === 'd3'`, 'the board’s settings at d3’s switch');
 	expect(await tab.eval(`({ open: document.querySelector('dialog[aria-labelledby="settings-title"]').open, marked: document.querySelector('li[aria-current="true"]')?.textContent.trim(), search: location.search })`)).toEqual({ open: true, marked: 'd3', search: '' });
