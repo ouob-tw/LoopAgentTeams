@@ -75,7 +75,7 @@ uv run --no-project python <本技能資料夾>/scripts/task-proposal.py
 - `repeat`：預設 `false`；只有 `file`、`log` 能設 `true`。
 - `handoff` 必填。`resume`（接回原主控）只填上例這些欄位。`new-agent`（開新 Agent）另填 `"kind": "agent"`、`agent`、`limitMinutes` 與說明檔，不填 `schedule`、`time`，不能開 `unattended` 與 `review`。
 
-`resume` 任務核准後，註冊它的主控執行 `tp away <任務編號或提案編號>`：看板標成事件等待，幾秒後關閉你，所以它是最後一個動作。被拒時照印出的原因處理，保持開著。
+`resume` 任務核准後，註冊它的主控執行 `tp away <任務編號或提案編號>`：看板標成事件等待，幾秒後關閉你，所以它是最後一個動作。被拒時照印出的原因處理，保持開著。`away` 沒收到回應時（印出的文字講的是送出提案）也保持開著，再執行一次 `away`，重做是安全的。
 
 ## 說明檔
 
