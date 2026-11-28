@@ -40,6 +40,7 @@ import type { Device } from './devices.ts';
 import { createApprovals, answerOf, TEST_DEVICE_REFUSED, type Answer } from './task-proposal-approval.ts';
 import { createProposalNotifier, notifyPath, type NotifyTarget } from './task-proposal-notify.ts';
 import { ownEnv } from './hcom.ts';
+import { CONTROLLER_ONLY } from './event-tasks.ts';
 import { exceptionFields, log } from './log.ts';
 
 /** The largest brief a proposal may carry in full. */
@@ -53,7 +54,7 @@ const STARTED_WELL_MS = 60_000;
 
 /** Why a request was not taken; the acceptor itself adds `refused` (sender not verified) and
  *  `board-timeout` (no reply in 30 s). */
-export type RefusalCode = 'bad-request' | 'not-found' | 'not-yours' | 'ended' | 'board';
+export type RefusalCode = 'bad-request' | 'not-found' | 'not-yours' | 'ended' | 'board' | 'not-controller';
 export type AcceptorReply =
 	| { ok: true; id: string; status: 'pending' | 'invalid' | 'withdrawn'; errors?: Record<string, string> }
 	| { ok: false; error: RefusalCode; reason: string; status?: string };
@@ -114,8 +115,11 @@ export function createProposalStore(options: {
 	taskExists?(taskId: string): boolean;
 	ended?(id: string, result: ResultFile, target: NotifyTarget | null): void;
 	damaged?(id: string): void;
+	/** Where an event proposal's process is looked up (`/proc` unless a test gives its own). */
+	procDir?: string;
 }) {
 	const { dir, now } = options;
+	const procDir = options.procDir ?? '/proc';
 	const home = options.home ?? homedir();
 	const proposalPath = (id: string) => join(dir, `${id}.json`);
 	const resultPath = (id: string) => join(dir, `${id}.result.json`);
@@ -389,8 +393,15 @@ export function createProposalStore(options: {
 		submit(proposer: Proposer, input: unknown): AcceptorReply {
 			if (!isProposer(proposer)) return { ok: false, error: 'bad-request', reason: '看板沒收到查證過的提案者' };
 			if (!input || typeof input !== 'object' || Array.isArray(input)) return { ok: false, error: 'bad-request', reason: '提案要是一個任務的欄位（JSON 物件）' };
+			// 事件任務 (#763): only a verified LAT controller's, refused before anything is written.
+			if ((input as { trigger?: unknown }).trigger === 'event' && proposer.role !== 'controller') {
+				log('WARNING', 'board.proposals', 'task_proposal_not_controller', { proposer: proposer.name, client: proposer.client, role: proposer.role });
+				return { ok: false, error: 'not-controller', reason: CONTROLLER_ONLY };
+			}
 			ensureDir();
-			const checked = validateTask(input, home);
+			const at = now();
+			// An event's process start time is read now, and its time must be ahead and within the deadline.
+			const checked = validateTask(input, home, { submit: { at, procDir } });
 			const errors = 'errors' in checked ? { ...checked.errors } : {};
 			let brief: ProposalFile['brief'] = null;
 			if ('task' in checked && checked.task.agent) {
@@ -399,7 +410,6 @@ export function createProposalStore(options: {
 				else brief = read.brief;
 			}
 			const valid = Object.keys(errors).length === 0 && 'task' in checked;
-			const at = now();
 			const id = newId();
 			const file: ProposalFile = {
 				version: 1,
@@ -533,6 +543,7 @@ export function createTaskProposals(options: {
 	taskExists?(taskId: string): boolean;
 	/** An approval was found damaged and ended 核准失敗: the user is told (a push). */
 	damaged?(id: string): void;
+	procDir?: string;
 	sweepMs?: number;
 }): TaskProposals {
 	const notifier = createProposalNotifier({ dir: options.dir, now: options.now, config: options });
