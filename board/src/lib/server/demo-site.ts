@@ -10,6 +10,7 @@ import { DEVICE_COOKIE } from './auth.ts';
 import type { BoardConfig } from './config.ts';
 import { DEMO_HOST_PREFIX } from './demo-address.ts';
 import { isDemoAddress, serveDemo } from './demo.ts';
+import { isSharedDemo } from './demo-share.ts';
 import { findDeviceById, type Device } from './devices.ts';
 import { log } from './log.ts';
 
@@ -116,8 +117,9 @@ function newState(event: RequestEvent): { state: string; cookie: string } {
 	return { state, cookie: event.cookies.serialize(DEMO_STATE_COOKIE, state, { ...COOKIE, path: LOGIN_PATH, maxAge: STATE_SECONDS }) };
 }
 
-/** Every request to the demo address: demo files for a browser logged in there, the login handover
- *  otherwise, and 404 for anything that is not a demo. Only reading. */
+/** Every request to the demo address: demo files for a browser logged in there, or for any browser
+ *  when the demo is shared (demo-share.ts), the login handover otherwise, and 404 for anything
+ *  that is not a demo. Only reading. */
 export async function answerDemoAddress(config: BoardConfig, event: RequestEvent): Promise<Response> {
 	const { method } = event.request;
 	if (method !== 'GET' && method !== 'HEAD') return text('method not allowed', 405);
@@ -125,7 +127,7 @@ export async function answerDemoAddress(config: BoardConfig, event: RequestEvent
 	if (path === LOGIN_PATH) return trade(config, event);
 	const rest = path.slice(1);
 	if (!isDemoAddress(rest)) return text('not found', 404);
-	if (loggedIn(config, event.cookies.get(DEMO_LOGIN_COOKIE))) return serveDemo(config.demoSiteDir, rest, event.url.search, '/');
+	if (isSharedDemo(config.stateDir, config.demoSiteDir, rest) || loggedIn(config, event.cookies.get(DEMO_LOGIN_COOKIE))) return serveDemo(config.demoSiteDir, rest, event.url.search, '/');
 	// The board's address is set whenever the demo address is (config.ts).
 	const { state, cookie } = newState(event);
 	const to = encodeURIComponent(path + event.url.search);

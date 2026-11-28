@@ -4,7 +4,7 @@
 // `allow-same-origin` (security-headers.ts, set for the path by hooks.server.ts and the connection
 // guard), so the page runs as an origin of its own, which gets no board cookie and cannot read any
 // board answer; the demo address is such an origin already.
-import { realpathSync, statSync } from 'node:fs';
+import { readdirSync, realpathSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join, sep } from 'node:path';
 
@@ -66,8 +66,58 @@ function segments(pathname: string): string[] | null {
 
 /** Whether `rest` (as the address has it) names a demo and stays inside it, before any file is read. */
 export function isDemoAddress(rest: string): boolean {
+	return demoName(rest) !== null;
+}
+
+/** What follows `/demo/` in a board address's path, still percent-encoded, as the demo route and
+ *  the login check (hooks.server.ts) both read it. */
+export const demoRest = (pathname: string) => pathname.replace(/^\/demo\/?/, '');
+
+/** The demo `rest` (as the address has it) is inside, or null when it names none or could reach
+ *  outside its folder. */
+export function demoName(rest: string): string | null {
 	const parts = segments(rest);
-	return parts !== null && NAME.test(parts[0]);
+	return parts !== null && NAME.test(parts[0]) ? parts[0] : null;
+}
+
+export const isDemoName = (value: unknown): value is string => typeof value === 'string' && NAME.test(value);
+
+/** Which folder the demo `name` is right now, as `<device>:<inode>:<created>`: `demo.py publish`
+ *  puts a new folder in place each time, so a page published again, or another page under a reused
+ *  name, is a different folder. Null when it is not a published demo. */
+export function demoFolderId(siteDir: string, name: string): string | null {
+	if (!NAME.test(name)) return null;
+	try {
+		const root = realpathSync(siteDir);
+		const own = realpathSync(join(root, name));
+		const stat = statSync(own);
+		if (!own.startsWith(root + sep) || !stat.isDirectory()) return null;
+		return `${stat.dev}:${stat.ino}:${stat.birthtimeMs || stat.ctimeMs}`;
+	} catch {
+		return null;
+	}
+}
+
+/** The published demos: each folder of the site directory a demo address can name, newest change
+ *  first. None when the directory cannot be read. */
+export function listDemos(siteDir: string): string[] {
+	try {
+		const root = realpathSync(siteDir);
+		const found: { name: string; modified: number }[] = [];
+		for (const name of readdirSync(root)) {
+			if (!NAME.test(name)) continue;
+			try {
+				const own = realpathSync(join(root, name));
+				const stat = statSync(own);
+				if (own.startsWith(root + sep) && stat.isDirectory()) found.push({ name, modified: stat.mtimeMs });
+			} catch {
+				// Gone or unreadable since the directory was read: not listed.
+			}
+		}
+		return found.sort((a, b) => b.modified - a.modified || a.name.localeCompare(b.name)).map((demo) => demo.name);
+	} catch {
+		return [];
+	}
 }
 
 /** The answer to `GET <base><rest>`, `rest` as the address has it (still percent-encoded); `base`
