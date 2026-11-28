@@ -842,7 +842,7 @@
 						</button>
 					{:else if view.kind === 'automation' || view.kind === 'automation-edit'}
 						<button class="whose" onclick={scrollToTop}>
-							<strong>{view.kind === 'automation-edit' ? (view.id === null ? '新增任務' : '編輯任務') : (taskView?.task.name ?? '自動化任務')}</strong>
+							<strong>{view.kind === 'automation-edit' && !(taskView && isEventView(taskView)) ? (view.id === null ? '新增任務' : '編輯任務') : (taskView?.task.name ?? '自動化任務')}</strong>
 						</button>
 					{:else if owner}
 						<!-- Tappable while the controller is on the roster; an archived item of one that left is not. -->

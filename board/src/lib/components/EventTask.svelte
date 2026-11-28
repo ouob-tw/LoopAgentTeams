@@ -56,10 +56,11 @@
 	/** What the last button pressed here answered, when it was refused. */
 	let notice = $state<string | null>(null);
 	let busy = $state(false);
-	/** The attempt 重試接手 was pressed on: the button is off until a later attempt is on record
-	 *  (it may fail again at once, and is offered again then). */
-	let retriedFrom = $state<number | null>(null);
-	const retrying = $derived(retriedFrom !== null && (lastAttempt?.handoff.attempt ?? 0) <= retriedFrom);
+	/** The run 重試接手 was pressed on: the button is off until a newer attempt is on record (it may
+	 *  fail again at once, and is offered again then). By run, not attempt number: a reusable
+	 *  task's next event counts its attempts from 1 again. */
+	let retriedRun = $state<string | null>(null);
+	const retrying = $derived(retriedRun !== null && lastAttempt?.id === retriedRun);
 
 	async function act(step: () => Promise<{ ok: boolean; message?: string }>) {
 		busy = true;
@@ -71,8 +72,8 @@
 		return done.ok;
 	}
 	async function retry() {
-		retriedFrom = lastAttempt?.handoff.attempt ?? 0;
-		if (!(await act(() => retryHandoff(task.id)))) retriedFrom = null;
+		retriedRun = lastAttempt?.id ?? null;
+		if (!(await act(() => retryHandoff(task.id)))) retriedRun = null;
 	}
 	let deleting = $state(false);
 	async function remove() {
