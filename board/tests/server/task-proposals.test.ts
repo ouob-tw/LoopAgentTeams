@@ -207,6 +207,8 @@ test('an unanswered proposal expires after 24 hours, and an ended one goes with 
 	expect((await (await board.fetch('/api/task-proposals', { cookie })).json()).proposals).toEqual([]);
 	expect((await asAgent(board, luna, ['status', kept])).stdout.trim()).toBe(`已過期：${kept}`);
 	expect(logged(board.serverOutput(), 'task_proposal_expired')).toMatchObject([{ proposal_id: kept }]);
+	// The expiry's message is sent behind the answers above: wait for its record.
+	await until(() => logged(board.serverOutput(), 'task_proposal_notified').length === 1, 10_000, 'the expiry to be told');
 
 	// The withdrawal ended at the start, the expiry a day later; the expiry's message record goes with it.
 	board.setClock(start + 7 * DAY + 60_000);
