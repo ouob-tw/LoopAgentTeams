@@ -4,6 +4,9 @@
       "paths": [
         "board/src/lib/server/demo.ts",
         "board/src/lib/server/demo-site.ts",
+        "board/src/lib/server/demo-share.ts",
+        "board/src/routes/api/demo-share/**",
+        "board/src/lib/components/DemoShareSettings.svelte",
         "board/src/lib/server/demo-address.ts",
         "board/src/lib/server/security-headers.ts",
         "board/src/lib/server/connection-guard.ts",
