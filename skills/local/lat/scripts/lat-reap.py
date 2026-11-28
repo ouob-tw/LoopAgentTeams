@@ -5,6 +5,8 @@ A process belongs to the agent whose HCOM_PROCESS_ID it inherited. It is a lefto
 that agent has ended: HCOM no longer lists it, no client process of it is running, an
 earlier reap saw HCOM list that id under the inherited name, and HCOM recorded the agent it
 inherited (name and launch batch) as stopped. Other owners are unknown and never closed.
+An ended launch's owner still counts as present while its name has a pause record (such as
+事件等待) or HCOM lists that name again (a resumed agent).
 Keeps, the close log and the lock live in one user-level folder shared by every project.
 See docs/adr/0008-lat-service-reaper.md.
 """
@@ -357,6 +359,8 @@ class World(NamedTuple):
     protected: dict
     unreadable: dict
     ended: set
+    # {pid: why} for processes of ended launches whose owner is still present; not leftovers.
+    present: dict = {}
 
 
 def read_seen(directory):
@@ -383,13 +387,27 @@ def remember_agents(directory, world, seen):
         write_json_atomic(directory / SEEN, {'seen': current})
 
 
+def present_owner(process, agents, paused):
+    """Why the owner of an ended launch is still present, or None when it has really ended."""
+    if any(name_matches(process, name) for name in paused):
+        return 'owner is paused'
+    if any(name_matches(process, agent[key]) for agent in agents.values()
+           for key in ('name', 'base')):
+        return 'owner is running again'
+    return None
+
+
 def observe(seen):
     """Read HCOM and /proc once, and work out which processes are never handled.
 
     A process counts as ended only when its id is not the nil UUID that test harnesses use,
     an earlier reap saw HCOM list that id under the name it inherited, and HCOM recorded that
-    name and launch batch as stopped.
+    name and launch batch as stopped. Its owner is nevertheless present while the name has a
+    pause record or HCOM lists it again.
     """
+    # Pauses are read on both sides of the HCOM reads: the board writes one before it stops a
+    # controller, and removes it only once the resumed controller is listed.
+    paused = set(read_hcom_pauses())
     agents = hcom_agents()
     processes, unreadable = read_processes()
     children = children_map(processes)
@@ -407,6 +425,9 @@ def observe(seen):
              and seen.get(process.env[MARKER]) == launch_owner(process)[0]]
     stopped = stopped_owners({launch_owner(process) for process in known})
     ended = {process.pid for process in known if launch_owner(process) in stopped}
+    paused |= set(read_hcom_pauses())
+    present = {pid: why for pid in ended
+               if (why := present_owner(processes[pid], agents, paused))}
     protected = {}
     ports = listening_pids(processes, protected_ports())
     for process in processes.values():
@@ -428,7 +449,7 @@ def observe(seen):
             reason = 'LAT process'
         if reason:
             protected[process.pid] = reason
-    return World(processes, agents, alive, protected, unreadable, ended)
+    return World(processes, agents, alive, protected, unreadable, ended - present.keys(), present)
 
 
 def parse_time(value):
@@ -526,7 +547,7 @@ def unknown_owner(world, targets, kept, only=None):
             if process.env.get(MARKER) and process.env[MARKER] not in world.alive
             and (only is None or process.env[MARKER] in only) and process.state != 'Z'
             and process.pid not in targets and process.pid not in kept
-            and process.pid not in world.protected}
+            and process.pid not in world.protected and process.pid not in world.present}
 
 
 def describe(process, world):
@@ -828,8 +849,8 @@ def scan(args):
         return 1
     targets, kept, _live, _released = plan(world, keeps, moment)
     unknown = unknown_owner(world, targets, kept)
-    rows = {'Agent still running': [], 'Leftover': [], 'Kept': [], 'Unknown owner': [],
-            'Never handled': []}
+    rows = {'Agent still running': [], 'Leftover': [], 'Kept': [], 'Owner still present': [],
+            'Unknown owner': [], 'Never handled': []}
     for process in sorted(world.processes.values(), key=lambda item: item.pid):
         process_id = process.env.get(MARKER)
         if not process_id:
@@ -842,6 +863,8 @@ def scan(args):
             keep_record = kept[process.pid]
             rows['Kept'].append(f'{line} (until {keep_record["until"]} by {keep_record["by"]}: '
                                 f'{keep_record["reason"]})')
+        elif process.pid in world.present and process.pid not in world.protected:
+            rows['Owner still present'].append(f'{line} ({world.present[process.pid]})')
         elif process.pid in unknown:
             rows['Unknown owner'].append(f'{line} (owner not recorded as stopped; never closed)')
         elif process.pid in world.protected:

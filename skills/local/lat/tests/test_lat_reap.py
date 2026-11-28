@@ -661,6 +661,70 @@ class UnknownOwnerTests(ReapTestCase):
         self.assertEqual({record['result'] for record in self.log()}, {'aborted'})
 
 
+class EventWaitTests(ReapTestCase):
+    def pause(self, name, **fields):
+        directory = self.root / 'paused'
+        directory.mkdir(exist_ok=True)
+        path = directory / f'session-{name}.json'
+        path.write_text(json.dumps(dict(
+            session_id=path.stem, hcom_name=name, client='claude', pane=None,
+            paused_at='2026-11-28T17:30:00Z', **fields)))
+        return path
+
+    def test_owner_in_an_event_wait_keeps_its_processes_until_the_record_is_removed(self):
+        # The controller closed itself for its event task; its log collector keeps running.
+        collector = self.dead_agent('ctl')
+        other = self.dead_agent('other')
+        record = self.pause('test-ctl', reason='event-task', task_id='task-1')
+        self.reap('--trigger', 'periodic')
+        self.assertTrue(self.gone(other))
+        self.reap('--agent', 'test-ctl', '--trigger', 'deactivate')
+        self.assertTrue(self.alive(collector))
+        self.assertEqual(self.closed_pids(), [other])
+        scan = self.run_reaper('scan').stdout
+        self.assertIn(f'PID {collector}', scan.split('Owner still present:')[1].split('Unknown owner:')[0])
+        record.unlink()
+        self.reap('--trigger', 'periodic')
+        self.assertTrue(self.gone(collector))
+        self.assertEqual(self.closed_pids(), [other, collector])
+        self.assertEqual(self.log()[-1]['why'], 'owner agent ended')
+
+    def test_resumed_controller_keeps_its_earlier_processes_until_it_really_ends(self):
+        collector = self.dead_agent('ctl')
+        record = self.pause('test-ctl', reason='event-task', task_id='task-1')
+        # The board resumes the same name as a new launch, then removes the record.
+        env = {**self.agent_env('ctl', 'claude'), 'HCOM_PROCESS_ID': self.scope + 'ctl-again',
+               'HCOM_LAUNCH_BATCH_ID': 'batch-ctl-again'}
+        client = self.spawn(self.node('ctl-client'), env)['ctl-client']
+        self.set_hcom([('ctl', 'ctl-again', client)])
+        record.unlink()
+        self.reap('--trigger', 'periodic')
+        self.assertTrue(self.alive(collector))
+        self.assertEqual(self.log(), [])
+        scan = self.run_reaper('scan').stdout
+        self.assertIn(f'PID {collector}',
+                      scan.split('Owner still present:')[1].split('Unknown owner:')[0])
+        # The resumed controller ends for good.
+        os.kill(client, signal.SIGKILL)
+        self.assertTrue(self.gone(client))
+        self.set_hcom([])
+        self.record_life('batch_launched', 'ctl', batch_id='batch-ctl-again', instances=['ctl'])
+        self.record_life('stopped', 'ctl', reason='killed')
+        self.reap('--trigger', 'periodic')
+        self.assertTrue(self.gone(collector))
+        self.assertEqual(self.closed_pids(), [collector])
+
+    def test_an_ordinary_pause_record_also_counts_the_owner_as_present(self):
+        # A resumed controller whose HCOM link the board then paused is off the list, not ended.
+        service = self.dead_agent('plain')
+        record = self.pause('test-plain')
+        self.reap()
+        self.assertTrue(self.alive(service))
+        record.unlink()
+        self.reap()
+        self.assertTrue(self.gone(service))
+
+
 class SignalTimeIdentityTests(ReapTestCase):
     # Exception to the CLI-only entry point (orchestrator decision): an unprivileged test
     # cannot force a real PID reuse between scan and signal, so close() is called directly.
