@@ -100,6 +100,9 @@ the pause record restores the ordinary absent-orchestrator rule on the next reap
 An ended agent whose name has an event-wait record (`reason: "event-task"`) also counts as
 present as an owner: processes it left behind, such as a log collector started before
 `away`, are not closed as leftovers, and no `keep` is needed. Once the record is removed,
-the next reap applies the ordinary ended-owner rule. That includes a
-resumed controller's processes from before `away`, which belong to the ended launch: `keep`
-any that must keep running.
+the next reap applies the ordinary ended-owner rule.
+
+That includes a resumed controller's processes from before `away`: they belong to the
+ended launch and can be closed before the controller has recovered. Only when one must
+keep running after the controller is resumed, `keep` it before `away`, with an expiry that
+also covers the work after the resume; the keep stays valid during the wait.
