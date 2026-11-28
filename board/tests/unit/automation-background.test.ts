@@ -13,7 +13,7 @@ const toolCall = (name: string) => line({ type: 'assistant', message: { role: 'a
 const bashInBackground = (id: string) =>
 	line({
 		type: 'user',
-		message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `toolu_${id}`, content: `Command running in background with ID: ${id}. Output is being written to: /tmp/${id}.output.` }] },
+		message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `toolu_${id}`, content: `Command running in background with ID: ${id}. Output is being written to: ${id}.output.` }] },
 		toolUseResult: { stdout: '', stderr: '', interrupted: false, isImage: false, noOutputExpected: false, backgroundTaskId: id }
 	});
 const monitor = (id: string) =>
