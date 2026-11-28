@@ -318,7 +318,7 @@ test('Log 檔出現指定文字: old content and other lines do not count; a mat
 	rmSync(logFile);
 	const missing = await eventually(async () => {
 		const view = await viewOf(s, id);
-		return view.event?.readError && view;
+		return view.event?.readError ? view : undefined;
 	}, 'the read error');
 	expect(missing.event!.readError).toBe('讀不到 Log 檔：檔案不存在');
 	writeFileSync(logFile, 'x'.repeat(200) + '\n');
@@ -490,7 +490,14 @@ test('stopped halfway through a handoff, the board never sends it again: with th
 
 	// Stopped after this attempt's session was recorded and before the attempt was marked 已接手.
 	const evidenced = await approved(s, { type: 'file', path: join(work, 'c.txt') });
+	// And one stopped right after the record was written, before any launch.
+	const recorded = await approved(s, { type: 'file', path: join(work, 'd.txt') });
 	await board.stop();
+	const early = `${(T0 + 3 * MINUTE).toString(36)}-0123456789`;
+	writeFileSync(
+		join(board.dir, 'board-state/automation/runs', `${recorded}.jsonl`),
+		JSON.stringify({ id: early, taskId: recorded, trigger: 'event', period: '2026-11-28', startedAt: T0 + 3 * MINUTE, status: 'running', handoff: { occurrence: early, attempt: 1, event: { cause: 'event', at: T0 + 3 * MINUTE, details: [] }, status: 'handing' } }) + '\n'
+	);
 	const id = `${(T0 + 3 * MINUTE).toString(36)}-abcdef1234`;
 	const handoff = { occurrence: id, attempt: 1, event: { cause: 'event', at: T0 + 3 * MINUTE, details: [] }, status: 'handing' };
 	writeFileSync(
@@ -500,6 +507,8 @@ test('stopped halfway through a handoff, the board never sends it again: with th
 	await board.start();
 	const handed = await inState(s, evidenced, 'done');
 	expect(handoffRuns(handed)[0].handoff).toMatchObject({ status: 'handed', evidence: { sessionId: 's-evt-y1' } });
+	await inState(s, recorded, 'unknown');
+	await sleep(300);
 	expect(launches(board)).toHaveLength(1);
 
 	hcomPlan(board, [s.ctrl, s.luna], ['evt-x2']);

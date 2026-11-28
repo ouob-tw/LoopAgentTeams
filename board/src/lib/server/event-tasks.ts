@@ -27,7 +27,7 @@ import {
 } from '../board/event-tasks.ts';
 import { TIME_ZONE } from '../board/automation.ts';
 
-export type FieldErrors = Record<string, string>;
+import type { CheckMode, FieldErrors } from './automation.ts';
 
 /** Why an event proposal from anyone but a LAT controller is refused. */
 export const CONTROLLER_ONLY = '事件任務只收 LAT 主控的提案';
@@ -50,7 +50,9 @@ export function processStart(procDir: string, pid: number): number | null {
 	// The name in parentheses may hold spaces and parentheses: fields count from the last `)`.
 	const rest = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
 	const start = Number(rest[19]);
-	return Number.isInteger(start) ? start : null;
+	// A stat that does not read is no proof the process ended.
+	if (!Number.isInteger(start)) throw new Error(`stat 的內容看不懂：${stat.slice(0, 80)}`);
+	return start;
 }
 
 const formatter = new Intl.DateTimeFormat('zh-TW', { timeZone: TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
@@ -86,7 +88,7 @@ const integer = (value: unknown) => (typeof value === 'number' && Number.isInteg
 export function checkEvent(
 	body: Record<string, any>,
 	errors: FieldErrors,
-	mode: { submit?: { at: number; procDir: string }; approve?: { at: number } } = {}
+	mode: Pick<CheckMode, 'submit' | 'approve'> = {}
 ): EventSettings | undefined {
 	const deadlineMinutes = body.deadlineMinutes === undefined ? DEFAULT_DEADLINE_MINUTES : integer(body.deadlineMinutes);
 	if (!(deadlineMinutes >= 1 && deadlineMinutes <= MAX_DEADLINE_MINUTES)) errors.deadlineMinutes = `期限請填 1 到 ${MAX_DEADLINE_MINUTES} 分鐘（最長 7 天）的整數`;
@@ -170,8 +172,9 @@ export function startWait(event: EventSpec, since: number): EventWait {
 		const mark = logMark(event.path);
 		return { version: 1, since, log: mark && { dev: mark.dev, ino: mark.ino, offset: mark.size } };
 	} catch (error) {
-		// Read again at the next look: as a file that was not there, from byte 0 once it can be read.
-		return { version: 1, since, log: null, readError: `讀不到 Log 檔：${(error as Error).message}` };
+		// Not known what the file held: the first good look marks its length, and only what comes
+		// after counts (a file that was not there at all, `null`, is read from byte 0).
+		return { version: 1, since, readError: `讀不到 Log 檔：${(error as Error).message}` };
 	}
 }
 
@@ -218,6 +221,8 @@ function lookAtLog(event: Extract<EventSpec, { type: 'log' }>, wait: EventWait, 
 	try {
 		const stat = fstatSync(fd);
 		const known = wait.log;
+		// The wait began while the file could not be read: what it holds now is the baseline.
+		if (known === undefined) return { wait: { ...clean, log: { dev: stat.dev, ino: stat.ino, offset: stat.size } } };
 		// Another file under the name, or one cut shorter than what was read: from its start.
 		const same = known && known.dev === stat.dev && known.ino === stat.ino && stat.size >= known.offset;
 		let offset = same ? known.offset : 0;
@@ -242,7 +247,14 @@ function lookAtLog(event: Extract<EventSpec, { type: 'log' }>, wait: EventWait, 
 				};
 			}
 		}
-		// A line with no end yet is read again once it has one.
+		// A line with no end yet is read again once it has one; one longer than a whole read is
+		// looked at as it is and passed, so the file is never stuck on it.
+		if (lineStart === 0 && read >= LOG_READ_MAX) {
+			const piece = buffer.subarray(0, read).toString('utf8');
+			if ((event.caseSensitive ? piece : piece.toLowerCase()).includes(wanted))
+				return { wait: { ...clean, log: { dev: stat.dev, ino: stat.ino, offset: offset + read } }, occurred: { cause: 'event', at, details: [`Log 檔：${event.path}`, `比對到的那一行：${piece.slice(0, MAX_MATCHED_LINE)}…`, `看到的時間：${taipeiText(at)}（台灣時間）`] } };
+			lineStart = read;
+		}
 		offset += lineStart;
 		return { wait: { ...clean, log: { dev: stat.dev, ino: stat.ino, offset } } };
 	} catch (error) {
@@ -257,7 +269,7 @@ export function handoffNote(task: { id: string; name: string; event?: EventSetti
 	const settings = task.event!;
 	return [
 		`【事件任務「${task.name}」（${task.id}）】${CAUSE_TEXT[occurrence.cause]}。`,
-		`等待的事件：${eventText(settings.event, (time) => `${taipeiText(time)}`)}`,
+		`等待的事件：${eventText(settings.event, taipeiText)}`,
 		...occurrence.details,
 		`觸發時間：${taipeiText(occurrence.at)}（台灣時間）`
 	].join('\n');

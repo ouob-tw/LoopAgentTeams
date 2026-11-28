@@ -137,8 +137,8 @@ export interface AutomationTask extends AutomationTaskInput {
 	source?: TaskSource;
 }
 
-/** 自動、手動、預覽、沿用原紀錄、事件. */
-/** `event`: an event task's handoff, whatever caused it (its `handoff.event.cause`). */
+/** 自動、手動、預覽、沿用原紀錄、事件: `event` is an event task's handoff, whatever caused it (its
+ *  `handoff.event.cause`). */
 export type RunTrigger = 'auto' | 'manual' | 'preview' | 'carried' | 'event';
 
 /** `skipped`: an automatic try came due while the task still ran; it is recorded and counts as the day's try. */

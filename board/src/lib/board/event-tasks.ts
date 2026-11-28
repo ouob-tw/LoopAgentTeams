@@ -87,7 +87,8 @@ export interface EventWait {
 	/** Events count from here: the approval, the end of the run of the last handoff, or a resume. */
 	since: number;
 	/** A Log event's file as last read: its identity and the byte up to which every whole line was
-	 *  looked at. Null while there is no such file. */
+	 *  looked at. Null while there is no such file (it is read from byte 0 once it is there);
+	 *  absent while the wait began on a file that could not be read (its length then is the start). */
 	log?: { dev: number; ino: number; offset: number } | null;
 	/** Why the last look could not read what it waits on (讀不到 Log 檔：…); cleared by a good read. */
 	readError?: string;
@@ -144,7 +145,7 @@ export function closingOf(settings: Pick<EventSettings, 'repeat'>, handoff: RunH
 
 /** The task's state from its wait and runs (newest first): an end first, then the latest
  *  attempt (接手中, 接手失敗, 接手結果不明, or its run still going), then paused, then waiting. */
-export function eventState(paused: boolean, wait: Pick<EventWait, 'ended'>, runs: readonly { handoff?: RunHandoff; startedAt: number; status: string; review?: unknown; fix?: unknown }[], open: (run: any) => boolean): EventTaskState {
+export function eventState<R extends { handoff?: RunHandoff; startedAt: number }>(paused: boolean, wait: Pick<EventWait, 'ended'>, runs: readonly R[], open: (run: R) => boolean): EventTaskState {
 	if (wait.ended) return wait.ended.status;
 	const last = latestHandoff(runs);
 	if (last?.handoff.status === 'handing') return 'handing';

@@ -364,11 +364,8 @@ export function validateTask(input: unknown, home = homedir(), mode: CheckMode =
 
 /** An event task's fields (#763): an agent task's name, limit and agent, which its 開新 Agent
  *  handoff runs with, beside its event settings. No schedule, no unattended grant, no checker. */
-function validateEventTask(given: Record<string, any>, home: string, mode: CheckMode): { task: AutomationTaskInput } | { errors: FieldErrors } {
+function validateEventTask(body: Record<string, any>, home: string, mode: CheckMode): { task: AutomationTaskInput } | { errors: FieldErrors } {
 	const errors: FieldErrors = {};
-	// A saved task keeps the event settings together (`event: { event, deadlineMinutes, … }`); a
-	// proposal sends them beside the other fields.
-	const body = given.event && typeof given.event === 'object' && typeof given.event.event === 'object' ? { ...given, ...given.event } : given;
 	const { trigger: _trigger, event: _event, deadlineMinutes: _deadline, repeat: _repeat, handoff: _handoff, ...fields } = body;
 	const base = validateTask({ ...fields, schedule: EVENT_SCHEDULE, time: EVENT_TIME, review: undefined }, home, { paths: mode.paths });
 	if ('errors' in base) Object.assign(errors, base.errors);
@@ -378,6 +375,14 @@ function validateEventTask(given: Record<string, any>, home: string, mode: Check
 	const event = checkEvent(body, errors, mode);
 	if (Object.keys(errors).length || !event || 'errors' in base) return { errors };
 	return { task: { ...base.task, trigger: 'event', event } };
+}
+
+/** A saved event task as its proposal sent it: the event settings, kept together on the task
+ *  (`event: { event, deadlineMinutes, … }`), beside the other fields again, so it is checked as
+ *  one. Any other task as it is. */
+export function asProposed(task: AutomationTaskInput): Record<string, unknown> {
+	if (task?.trigger !== 'event' || !task.event || typeof task.event !== 'object') return task as unknown as Record<string, unknown>;
+	return { ...task, ...task.event };
 }
 
 /** What an event task keeps in the schedule fields every task has: nothing schedules by them. */
@@ -418,7 +423,7 @@ function parseTask(raw: string, file: string, home: string): AutomationTask | st
 	if (!value || typeof value !== 'object') return '內容不是一個任務';
 	if (value.id !== file.replace(/\.json$/, '')) return '檔名和裡面的任務編號不一致';
 	for (const key of ['createdAt', 'updatedAt']) if (typeof value[key] !== 'string') return `少了 ${key}`;
-	const checked = validateTask(value, home, { paths: false });
+	const checked = validateTask(asProposed(value), home, { paths: false });
 	if ('errors' in checked) return `欄位不對：${Object.keys(checked.errors).join('、')}`;
 	return { ...checked.task, id: value.id, paused: value.paused === true, createdAt: value.createdAt, updatedAt: value.updatedAt, ...(isSource(value.source) ? { source: value.source } : {}) };
 }
@@ -920,7 +925,7 @@ export function createAutomation(options: {
 	 *  neither started by the schedule nor counted as missed. */
 	const runnable = (task: AutomationTask) => (task.kind === 'command' ? task.command !== undefined : task.agent !== undefined && options.agents !== undefined);
 	/** A 週期 task: the schedule starts its tries and counts its missed periods. */
-	const scheduled = (task: AutomationTask) => task.trigger !== 'event';
+	const scheduled = (task: AutomationTask) => !task.event;
 	function busy(taskId: string): boolean {
 		return children.has(taskId) || (runs.get(taskId) ?? []).some(isOpen);
 	}
@@ -1456,8 +1461,19 @@ export function createAutomation(options: {
 			if (wait.since < runEnd) {
 				// Waiting again from the end of the run: what happened while it ran does not count.
 				wait = startWait(settings.event, runEnd);
-				if (runEnd >= deadlineAt || at >= deadlineAt) {
-					endWait(task, wait, task.paused ? 'expired-paused' : 'expired', at);
+				// The run went on past the deadline: no timeout handoff. Only a board that was off
+				// when the run ended still looks once for an event between that end and the deadline.
+				if (runEnd >= deadlineAt || task.paused) {
+					if (at >= deadlineAt || runEnd >= deadlineAt) {
+						endWait(task, wait, task.paused ? 'expired-paused' : 'expired', at);
+						return true;
+					}
+				} else if (at >= deadlineAt) {
+					const look = lookAt(settings.event, wait, at, procDir);
+					if (look.occurred && !busy(task.id)) {
+						handOff(task, look.occurred);
+						writeWait(task.id, look.wait);
+					} else endWait(task, wait, 'expired', at);
 					return true;
 				}
 				writeWait(task.id, wait);
@@ -1471,11 +1487,14 @@ export function createAutomation(options: {
 		}
 		const look = lookAt(settings.event, wait, at, procDir);
 		const changed = JSON.stringify(look.wait) !== JSON.stringify(wait);
-		if (changed) writeWait(task.id, look.wait);
 		if (look.occurred) {
+			// The handoff's run is on record before a Log offset past the matched line is: a board
+			// stopped in between never loses the event.
 			handOff(task, look.occurred);
+			if (changed) writeWait(task.id, look.wait);
 			return true;
 		}
+		if (changed) writeWait(task.id, look.wait);
 		if (at >= deadlineAt) {
 			handOff(task, { cause: 'deadline', at, details: [`期限：${taipeiText(deadlineAt)}（台灣時間）`] });
 			return true;
@@ -1631,7 +1650,7 @@ export function createAutomation(options: {
 			const dropCopy = () => brief && rmSync(brief.path, { force: true });
 			// An event task's time must still be ahead of the approval and within its deadline.
 			const approvedAt = Date.parse(approval.source.approvedAt);
-			const checked = validateTask(input, home, { approve: { at: Number.isNaN(approvedAt) ? now() : approvedAt } });
+			const checked = validateTask(asProposed(input), home, { approve: { at: Number.isNaN(approvedAt) ? now() : approvedAt } });
 			if ('errors' in checked) {
 				dropCopy();
 				return { ok: false, status: 400, errors: checked.errors };
