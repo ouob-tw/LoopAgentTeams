@@ -714,9 +714,13 @@ class EventWaitTests(ReapTestCase):
         self.assertTrue(self.gone(collector))
         self.assertEqual(self.closed_pids(), [collector])
 
-    def test_an_ordinary_pause_record_does_not_keep_an_ended_owners_processes(self):
+    def test_an_ordinary_pause_record_also_counts_the_owner_as_present(self):
+        # A resumed controller whose HCOM link the board then paused is off the list, not ended.
         service = self.dead_agent('plain')
-        self.pause('test-plain')
+        record = self.pause('test-plain')
+        self.reap()
+        self.assertTrue(self.alive(service))
+        record.unlink()
         self.reap()
         self.assertTrue(self.gone(service))
 

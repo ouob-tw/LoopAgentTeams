@@ -5,8 +5,8 @@ A process belongs to the agent whose HCOM_PROCESS_ID it inherited. It is a lefto
 that agent has ended: HCOM no longer lists it, no client process of it is running, an
 earlier reap saw HCOM list that id under the inherited name, and HCOM recorded the agent it
 inherited (name and launch batch) as stopped. Other owners are unknown and never closed.
-An ended launch's owner still counts as present while its name has an event-wait pause
-record (事件等待) or HCOM lists that name again (a resumed agent).
+An ended launch's owner still counts as present while its name has a pause record (such as
+事件等待) or HCOM lists that name again (a resumed agent).
 Keeps, the close log and the lock live in one user-level folder shared by every project.
 See docs/adr/0008-lat-service-reaper.md.
 """
@@ -387,16 +387,10 @@ def remember_agents(directory, world, seen):
         write_json_atomic(directory / SEEN, {'seen': current})
 
 
-def event_waits():
-    """Names of the agents with an event-wait pause record."""
-    return {name for name, record in read_hcom_pauses().items()
-            if record.get('reason') == 'event-task'}
-
-
-def present_owner(process, agents, waits):
+def present_owner(process, agents, paused):
     """Why the owner of an ended launch is still present, or None when it has really ended."""
-    if any(name_matches(process, name) for name in waits):
-        return 'owner waits for its event task'
+    if any(name_matches(process, name) for name in paused):
+        return 'owner is paused'
     if any(name_matches(process, agent[key]) for agent in agents.values()
            for key in ('name', 'base')):
         return 'owner is running again'
@@ -408,12 +402,12 @@ def observe(seen):
 
     A process counts as ended only when its id is not the nil UUID that test harnesses use,
     an earlier reap saw HCOM list that id under the name it inherited, and HCOM recorded that
-    name and launch batch as stopped. Its owner is nevertheless present while the name has an
-    event-wait pause record or HCOM lists it again.
+    name and launch batch as stopped. Its owner is nevertheless present while the name has a
+    pause record or HCOM lists it again.
     """
     # Pauses are read on both sides of the HCOM reads: the board writes one before it stops a
     # controller, and removes it only once the resumed controller is listed.
-    waits = event_waits()
+    paused = set(read_hcom_pauses())
     agents = hcom_agents()
     processes, unreadable = read_processes()
     children = children_map(processes)
@@ -431,9 +425,9 @@ def observe(seen):
              and seen.get(process.env[MARKER]) == launch_owner(process)[0]]
     stopped = stopped_owners({launch_owner(process) for process in known})
     ended = {process.pid for process in known if launch_owner(process) in stopped}
-    waits |= event_waits()
+    paused |= set(read_hcom_pauses())
     present = {pid: why for pid in ended
-               if (why := present_owner(processes[pid], agents, waits))}
+               if (why := present_owner(processes[pid], agents, paused))}
     protected = {}
     ports = listening_pids(processes, protected_ports())
     for process in processes.values():
