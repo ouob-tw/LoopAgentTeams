@@ -74,7 +74,7 @@ test.skipIf(!CHROME)(
 		// The row is wider than the phone: it scrolls, and the picked tab is wholly in view.
 		expect(await tab.eval(`document.querySelector('.middle-tabs').scrollWidth > document.querySelector('.middle-tabs').clientWidth`)).toBe(true);
 		expect(await tab.eval(PICKED_SHOWN)).toBe(true);
-		expect(await tab.eval(`document.querySelector('[data-middle="events"] small.waiting')?.textContent`)).toBe('1');
+		expect(await tab.eval(`document.querySelector('[data-middle="events"] small.waiting')?.textContent`)).toBe('1個等待中');
 		// Only event tasks, no 新增任務; each card says what it waits for or how it stands.
 		expect(await text('.events')).not.toContain('新增任務');
 		expect(await text(`.events [data-task="${waiting}"]`)).toContain('等待事件：Log 出現「DONE」');
@@ -165,6 +165,11 @@ test.skipIf(!CHROME)(
 		await tab.pointerClick('.detail [data-event-task] header .more');
 		await tab.until(`!!document.querySelector('[data-details]')`, '詳細資料 open');
 		await frames('event-task-1280-details');
+		// An edit address kept from before: no form, the reason instead.
+		await tab.send('Page.navigate', { url: `${s.board.url}/?automation-edit=${waiting}` });
+		await tab.boardStarted();
+		await tab.until(`!!document.querySelector('[data-event-unchangeable]')`, 'the no-edit note');
+		expect(await tab.eval(`!!document.querySelector('.detail form')`)).toBe(false);
 	},
 	TEST_MS
 );

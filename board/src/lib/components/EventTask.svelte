@@ -10,7 +10,7 @@
 	import { clientName, EFFORT_TEXT, isOpen, runLabel, runReason, timeFormat, workedText, type AutomationRun } from '#lib/board/automation.ts';
 	import { deleteTask, pauseTask, retryHandoff, stopTask, triggerTask } from '#lib/board/automation-actions.ts';
 	import { attemptText, controllerOf, eventLines, type EventTaskViewOf } from '#lib/board/event-task-view.ts';
-	import { CAUSE_SHORT, CAUSE_TEXT, closingOf, eventRows, repeatText, UNKNOWN_RETRY_WARNING, type MarkTone, type RunHandoff } from '#lib/board/event-tasks.ts';
+	import { attemptMark, CAUSE_TEXT, closingOf, eventRows, isEnded, repeatText, UNKNOWN_RETRY_WARNING, type RunHandoff } from '#lib/board/event-tasks.ts';
 	import { proposerName, ROLE_LABELS, VERIFIED } from '#lib/board/task-proposals.ts';
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import EventMark from './EventMark.svelte';
@@ -36,7 +36,7 @@
 	const taskId = $derived(view.task.id);
 	const at = $derived(timeFormat(timeZone));
 	const lines = $derived(eventLines(view, timeZone));
-	const ended = $derived(phase === 'done' || phase === 'expired' || phase === 'expired-paused');
+	const ended = $derived(isEnded(phase));
 	const runningRun = $derived(view.runs.find(isOpen));
 	const handoffs = $derived(view.runs.filter((run): run is AutomationRun & { handoff: RunHandoff } => run.handoff !== undefined));
 	const lastAttempt = $derived(handoffs[0]);
@@ -56,8 +56,10 @@
 	/** What the last button pressed here answered, when it was refused. */
 	let notice = $state<string | null>(null);
 	let busy = $state(false);
-	/** 重試接手 was pressed: off until the board says how the new attempt went. */
-	let retrying = $state(false);
+	/** The attempt 重試接手 was pressed on: the button is off until a later attempt is on record
+	 *  (it may fail again at once, and is offered again then). */
+	let retriedFrom = $state<number | null>(null);
+	const retrying = $derived(retriedFrom !== null && (lastAttempt?.handoff.attempt ?? 0) <= retriedFrom);
 
 	async function act(step: () => Promise<{ ok: boolean; message?: string }>) {
 		busy = true;
@@ -69,13 +71,9 @@
 		return done.ok;
 	}
 	async function retry() {
-		retrying = true;
-		if (!(await act(() => retryHandoff(task.id)))) retrying = false;
+		retriedFrom = lastAttempt?.handoff.attempt ?? 0;
+		if (!(await act(() => retryHandoff(task.id)))) retriedFrom = null;
 	}
-	// The new attempt is under way or settled: the button follows the task's state again.
-	$effect(() => {
-		if (phase !== 'failed' && phase !== 'unknown') retrying = false;
-	});
 	let deleting = $state(false);
 	async function remove() {
 		deleting = true;
@@ -92,13 +90,6 @@
 	}
 
 	const trigger = $derived(eventRows(settings.event, at.full));
-	/** A record's mark: why it ran and how the attempt went. */
-	function attemptMark(handoff: RunHandoff): { tone: MarkTone; text: string } {
-		if (handoff.status === 'failed') return { tone: 'bad', text: '✕ 接手失敗' };
-		if (handoff.status === 'unknown') return { tone: 'warn', text: '? 接手結果不明' };
-		if (handoff.status === 'handing') return { tone: 'going', text: '▶ 接手中' };
-		return handoff.event.cause === 'deadline' ? { tone: 'warn', text: `! ${CAUSE_SHORT.deadline}` } : { tone: 'ok', text: `✓ ${CAUSE_SHORT[handoff.event.cause]}` };
-	}
 	/** Where a record's link goes: the new Agent's conversation, or the controller's. */
 	function sessionOf(run: AutomationRun & { handoff: RunHandoff }): string | undefined {
 		if (settings.handoff === 'new-agent') return run.sessionId;

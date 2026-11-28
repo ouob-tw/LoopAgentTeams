@@ -52,7 +52,7 @@
 	import EventTask from '#lib/components/EventTask.svelte';
 	import EventTaskList from '#lib/components/EventTaskList.svelte';
 	import { isEventView } from '#lib/board/event-task-view.ts';
-	import { isWaiting } from '#lib/board/event-tasks.ts';
+	import { EVENT_UNCHANGEABLE, isWaiting } from '#lib/board/event-tasks.ts';
 	import AlertCard from '#lib/components/AlertCard.svelte';
 	import AskAlertCard from '#lib/components/AskAlertCard.svelte';
 	import type { AutomationAlert } from '#lib/board/alerts.ts';
@@ -617,7 +617,7 @@
 
 <!-- A tab's number: Herdr's agents, and the event tasks waiting for their event (none: no mark). -->
 {#snippet tabCount(id: (typeof middleTabs)[number]['id'])}
-	{#if id === 'agents'}<small>{agents.length}</small>{:else if id === 'events' && eventsWaiting}<small class="waiting" aria-label="{eventsWaiting} 個等待中">{eventsWaiting}</small>{/if}
+	{#if id === 'agents'}<small>{agents.length}</small>{:else if id === 'events' && eventsWaiting}<small class="waiting">{eventsWaiting}<span class="sr-only"> 個等待中</span></small>{/if}
 {/snippet}
 
 {#snippet refresh()}
@@ -909,7 +909,10 @@
 					{/if}
 				{:else if view.kind === 'automation'}
 					{#if taskView && isEventView(taskView)}
-						<EventTask view={taskView} timeZone={board.automation.timeZone} onchanged={() => void board.reloadAutomation()} onopenagent={openAgent} ondeleted={() => navigation.go(null)} />
+						<!-- Another task is a new page: nothing pressed on the last one carries over. -->
+						{#key taskView.task.id}
+							<EventTask view={taskView} timeZone={board.automation.timeZone} onchanged={() => void board.reloadAutomation()} onopenagent={openAgent} ondeleted={() => navigation.go(null)} />
+						{/key}
 					{:else if taskView}
 						<AutomationTask view={taskView} timeZone={board.automation.timeZone} onedit={() => navigation.go({ kind: 'automation-edit', id: taskView.task.id })} onchanged={() => void board.reloadAutomation()} onopenagent={openAgent} ondeleted={() => navigation.go(null)} />
 					{:else}
@@ -938,7 +941,10 @@
 						<p class="empty">這張紅卡已不存在。</p>
 					{/if}
 				{:else if view.kind === 'automation-edit'}
-					{#if view.id === null || taskView}
+					{#if taskView && isEventView(taskView)}
+						<!-- An address typed or kept from before: an event task has no form (#758). -->
+						<p class="empty" data-event-unchangeable>{EVENT_UNCHANGEABLE}</p>
+					{:else if view.id === null || taskView}
 						{#key view.id}
 							<AutomationForm task={taskView?.task ?? null} onsaved={taskSaved} oncancel={() => navigation.back()} />
 						{/key}
@@ -1312,6 +1318,15 @@
 		background: color-mix(in srgb, var(--text) 10%, var(--bg));
 		font-size: max(1rem, var(--min-font, 0px));
 		font-weight: 400;
+	}
+	/* Read out with the number, not seen. */
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+		white-space: nowrap;
 	}
 	/* Event tasks waiting: a filled mark, seen from any tab. */
 	.middle-tabs small.waiting,

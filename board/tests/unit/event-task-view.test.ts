@@ -63,7 +63,8 @@ test('the card lines: the deadline and the last result while it may hand over; w
 	expect(eventLines(view('waiting'), TIME_ZONE)).toMatchObject({ line: '最晚 11/29 17:40', last: null });
 	expect(eventLines(view('waiting', {}, [handed]), TIME_ZONE)).toMatchObject({ line: '最晚 11/29 17:40', last: '上次 11/28 15:12 事件發生，已接回主控 rivuta' });
 	const failed = { id: 'r2', startedAt: T, status: 'failed' as const, handoff: handoff('failed', 'manual') };
-	expect(eventLines(view('failed', {}, [failed]), TIME_ZONE).last).toBe('上次 11/28 15:12 手動觸發，接手失敗');
+	// 接手失敗 keeps past the deadline: the line says when it failed, not the deadline.
+	expect(eventLines(view('failed', {}, [failed]), TIME_ZONE)).toMatchObject({ line: '11/28 15:12 手動觸發，接手失敗', last: null });
 	const built = { id: 'r3', startedAt: T, status: 'success' as const, handoff: handoff('handed') };
 	expect(eventLines(view('done', { repeat: false, handoff: 'new-agent' }, [built]), TIME_ZONE)).toMatchObject({ line: '11/28 15:12 已開新 Agent', last: null });
 	expect(eventLines(view('expired-paused'), TIME_ZONE)).toMatchObject({ line: '11/29 17:40 結束', last: null });

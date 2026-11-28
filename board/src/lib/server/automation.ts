@@ -77,7 +77,7 @@ import {
 import { appendSent, readLines, type AutomationTaskSave } from './sent-log.ts';
 import { createFolderTrust, type TrustFiles } from './folder-trust.ts';
 import { FIX_CONTINUE_MESSAGE, fixMessage, judgeReview, REVIEW_CONTINUE_MESSAGE, reviewBrief, reviewMessage, reviewTag } from './automation-review.ts';
-import { closingOf, deadlineOf, EVENT_STATE_TEXT, eventState, latestHandoff, type EventEnd, type EventOccurrence, type EventTaskState, type EventTaskView, type EventWait, type EventAway, type RunHandoff } from '../board/event-tasks.ts';
+import { closingOf, deadlineOf, EVENT_STATE_TEXT, EVENT_UNCHANGEABLE, eventState, latestHandoff, type EventEnd, type EventOccurrence, type EventTaskState, type EventTaskView, type EventWait, type EventAway, type RunHandoff } from '../board/event-tasks.ts';
 import { clearPause, EVENT_TASK_REASON, isConnected, isEventWait, readPauses, writePause } from './paused.ts';
 import { checkEvent, handoffNote, lookAt, resumeNote, startWait, taipeiText } from './event-tasks.ts';
 import { log } from './log.ts';
@@ -450,7 +450,7 @@ const EVENT_SCHEDULE: AutomationSchedule = { type: 'daily' };
 const EVENT_TIME = '00:00';
 
 /** An event task cannot be edited (#758): deleted and proposed again instead. */
-export const EVENT_UNCHANGEABLE = '事件任務建立後不能修改；要改請刪除，讓主控重新提案，再用 passkey 核准';
+export { EVENT_UNCHANGEABLE };
 
 /** An event task's state as the pill every task has reads it. */
 const EVENT_TASK_STATE: Record<EventTaskState, TaskState> = {

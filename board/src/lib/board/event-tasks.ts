@@ -145,6 +145,9 @@ export interface EventAway {
 /** The roster's words for a controller waiting on its event task. */
 export const awayText = (taskName: string) => `等待事件任務：${taskName}`;
 
+/** Why an event task has no edit: the board refuses it and its page says so. */
+export const EVENT_UNCHANGEABLE = '事件任務建立後不能修改；要改請刪除，讓主控重新提案，再用 passkey 核准';
+
 /** What a retry of 接手結果不明 warns of. */
 export const UNKNOWN_RETRY_WARNING = '上一次可能已經送到，重試可能讓主控收到兩次或開出兩個 Agent';
 
@@ -234,7 +237,7 @@ export type MarkTone = 'event' | 'going' | 'ok' | 'warn' | 'bad' | 'wait';
 
 /** An event task's state mark on its card and page: an icon and words, and the colour. The latest
  *  attempt (`last`) tells an ended one-shot task that ran at its deadline from one whose event came. */
-export function eventMark(state: EventTaskState, event: EventSpec, last: Pick<RunHandoff, 'event'> | undefined, timeText: (time: number) => string): { tone: MarkTone; text: string } {
+export function eventMark(state: EventTaskState, event: EventSpec, last: Pick<RunHandoff, 'event'> | undefined, timeText: (time: number) => string): Mark {
 	const what = eventShort(event, timeText);
 	const cause = last?.event.cause;
 	switch (state) {
@@ -243,13 +246,13 @@ export function eventMark(state: EventTaskState, event: EventSpec, last: Pick<Ru
 		case 'paused':
 			return { tone: 'wait', text: '‖ 已暫停' };
 		case 'handing':
-			return { tone: 'going', text: '▶ 接手中' };
+			return { tone: 'going', text: `▶ ${HANDOFF_TEXT.handing}` };
 		case 'running':
 			return { tone: 'going', text: cause === 'manual' ? '▶ 已手動觸發，Agent 執行中' : cause === 'deadline' ? '▶ 已到期，Agent 執行中' : `▶ 已發生：${what}` };
 		case 'failed':
-			return { tone: 'bad', text: '✕ 接手失敗' };
+			return { tone: 'bad', text: `✕ ${HANDOFF_TEXT.failed}` };
 		case 'unknown':
-			return { tone: 'warn', text: '? 接手結果不明' };
+			return { tone: 'warn', text: `? ${HANDOFF_TEXT.unknown}` };
 		case 'done':
 			return cause === 'deadline' ? { tone: 'warn', text: '! 已到期：事件沒有發生' } : cause === 'manual' ? { tone: 'ok', text: '✓ 已手動觸發' } : { tone: 'ok', text: `✓ 已發生：${what}` };
 		case 'expired':
@@ -257,6 +260,20 @@ export function eventMark(state: EventTaskState, event: EventSpec, last: Pick<Ru
 		case 'expired-paused':
 			return { tone: 'warn', text: '! 已到期（暫停中）' };
 	}
+}
+
+/** An event task that ended for good: only 刪除 is left. */
+export const isEnded = (state: EventTaskState) => state === 'done' || state === 'expired' || state === 'expired-paused';
+
+/** A state mark: its colour and its icon with words. */
+export type Mark = { tone: MarkTone; text: string };
+
+/** One handoff record's mark: how the attempt went, or why it ran once it was handed over. */
+export function attemptMark(handoff: Pick<RunHandoff, 'status' | 'event'>): Mark {
+	if (handoff.status === 'failed') return { tone: 'bad', text: `✕ ${HANDOFF_TEXT.failed}` };
+	if (handoff.status === 'unknown') return { tone: 'warn', text: `? ${HANDOFF_TEXT.unknown}` };
+	if (handoff.status === 'handing') return { tone: 'going', text: `▶ ${HANDOFF_TEXT.handing}` };
+	return handoff.event.cause === 'deadline' ? { tone: 'warn', text: `! ${CAUSE_SHORT.deadline}` } : { tone: 'ok', text: `✓ ${CAUSE_SHORT[handoff.event.cause]}` };
 }
 
 /** The state counts as waiting for the event task tab's number. */

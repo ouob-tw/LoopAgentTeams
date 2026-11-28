@@ -1,8 +1,8 @@
 // An event task's card and page lines (#765): what it waits for or how it ended, its deadline or
 // its latest handoff, and its last result, worded from the snapshot the server sent. Pure; every
 // time in Asia/Taipei.
-import { timeFormat, type AutomationRun, type AutomationTaskView } from './automation.ts';
-import { CAUSE_SHORT, eventMark, latestHandoff, outcomeText, type EventSpec, type RunHandoff } from './event-tasks.ts';
+import { timeFormat, type AutomationTaskView } from './automation.ts';
+import { CAUSE_SHORT, eventMark, isEnded, latestHandoff, outcomeText, type EventSpec, type RunHandoff } from './event-tasks.ts';
 
 /** A view known to be an event task's. */
 export type EventTaskViewOf = AutomationTaskView & { event: NonNullable<AutomationTaskView['event']>; task: AutomationTaskView['task'] & { event: NonNullable<AutomationTaskView['task']['event']> } };
@@ -25,13 +25,16 @@ export interface EventLines {
 
 export function eventLines(view: EventTaskViewOf, timeZone: string): EventLines {
 	const at = timeFormat(timeZone);
-	const last = latestHandoff(view.runs as AutomationRun[]);
+	const last = latestHandoff(view.runs);
 	const event: EventSpec = view.task.event.event;
 	const mark = eventMark(view.event.state, event, last?.handoff, at.full);
 	const state = view.event.state;
-	const finished = state === 'running' || state === 'done' || state === 'expired';
-	if (finished && last?.handoff.status === 'handed') return { mark, line: `${at.full(last.handoff.settledAt ?? last.startedAt)} ${attemptText(view, last.handoff)}`, last: null };
-	if (state === 'expired-paused' || state === 'expired' || state === 'done') return { mark, line: `${at.full(view.event.ended?.at ?? view.event.deadlineAt)} 結束`, last: null };
+	// Handed over, and either its Agent still runs or the task is over: when and how it was.
+	const handedOver = (state === 'running' || isEnded(state)) && last?.handoff.status === 'handed';
+	if (handedOver) return { mark, line: `${at.full(last.handoff.settledAt ?? last.startedAt)} ${attemptText(view, last.handoff)}`, last: null };
+	if (isEnded(state)) return { mark, line: `${at.full(view.event.ended?.at ?? view.event.deadlineAt)} 結束`, last: null };
+	// The deadline no longer counts for these (they keep and can be retried after it): when it went.
+	if ((state === 'failed' || state === 'unknown') && last) return { mark, line: `${at.full(last.handoff.settledAt ?? last.startedAt)} ${CAUSE_SHORT[last.handoff.event.cause]}，${attemptText(view, last.handoff)}`, last: null };
 	return {
 		mark,
 		line: `最晚 ${at.full(view.event.deadlineAt)}`,
