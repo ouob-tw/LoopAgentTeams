@@ -7,7 +7,7 @@
 // fake hcom, found by its session. Every folder, the socket and hcom are the fixture's own.
 import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, expect, test } from 'bun:test';
+import { afterAll, afterEach, expect, test } from 'bun:test';
 import { DAY, jsonLines, logged, until, type Fixture } from '../harness.ts';
 import { decrypt, deviceKeys } from '../push-keys.ts';
 import { SoftPasskey } from '../soft-passkey.ts';
@@ -28,6 +28,7 @@ const pushService = Bun.serve({
 	}
 });
 const PUSH_ORIGIN = `http://127.0.0.1:${pushService.port}`;
+afterAll(() => pushService.stop(true));
 
 let fixture: Fixture | undefined;
 afterEach(async () => {
@@ -482,6 +483,8 @@ test('a damaged saved approval ends 核准失敗 with no task and a push; a task
 	chmodSync(proposalsDir(board), 0o700);
 	expect((await card(board, cookie, retried)).result).toMatchObject({ status: 'approved', taskId: `proposal-${retried}` });
 	expect((await tasksOf(board, cookie)).map((task) => task.id)).toEqual([`proposal-${retried}`]);
+	// Still the one push, from the damaged record alone.
+	expect(pushed.filter((entry) => entry.path === '/push/phone')).toHaveLength(1);
 });
 
 test('a proposal-made agent task runs from the approved brief, after the original changes and the proposal is cleared; a new brief path makes it a plain task', async () => {

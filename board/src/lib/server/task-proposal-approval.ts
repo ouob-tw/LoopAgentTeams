@@ -68,8 +68,8 @@ function signedChallenge(response: any): string | null {
 	}
 }
 
-/** `verify` checks the signature (`verifyLogin` unless a test steps in while it runs: the passkey
- *  and login checks after it are what make a removal meanwhile count). */
+/** `verify` is the signature check, `verifyLogin`; tests replace it to change the passkeys or logins
+ *  while it runs. */
 export function createApprovals(options: { store: Store; stateDir: string; site: PasskeySite | null; now(): number; verify?: typeof verifyLogin }) {
 	const { store, stateDir, site, now } = options;
 	const verify = options.verify ?? verifyLogin;
