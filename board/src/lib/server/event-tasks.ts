@@ -56,8 +56,12 @@ export function processStart(procDir: string, pid: number): number | null {
 }
 
 const formatter = new Intl.DateTimeFormat('zh-TW', { timeZone: TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-/** A moment as the handoff says it, in Asia/Taipei. */
-export const taipeiText = (time: number) => formatter.format(time);
+/** A moment as the handoff says it, in Asia/Taipei: `YYYY/MM/DD HH:MM:SS`, put together from its
+ *  parts, since ICU versions differ in the space they put between the date and the time. */
+export function taipeiText(time: number): string {
+	const part = Object.fromEntries(formatter.formatToParts(time).map((entry) => [entry.type, entry.value]));
+	return `${part.year}/${part.month}/${part.day} ${part.hour === '24' ? '00' : part.hour}:${part.minute}:${part.second}`;
+}
 
 /** `YYYY-MM-DDTHH:MM[:SS]` read in Asia/Taipei, or any ISO time with its own zone; null otherwise. */
 export function parseTaipei(value: unknown): number | null {

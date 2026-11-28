@@ -7,7 +7,7 @@ import { expect, test } from 'bun:test';
 import { closingOf, type RunHandoff } from '../../src/lib/board/event-tasks.ts';
 import { phaseText } from '../../src/lib/board/types.ts';
 import { eventNoticeText } from '../../src/lib/server/automation.ts';
-import { lookAt, parseTaipei, processStart } from '../../src/lib/server/event-tasks.ts';
+import { lookAt, parseTaipei, processStart, taipeiText } from '../../src/lib/server/event-tasks.ts';
 
 test('a running process has a start time in /proc; a PID with no process has none', () => {
 	expect(Number.isInteger(processStart('/proc', process.pid))).toBe(true);
@@ -19,6 +19,8 @@ test('a time without a zone is Taipei time; one with its own zone is read as giv
 	expect(parseTaipei('2026-11-29 09:00:30')).toBe(Date.parse('2026-11-29T01:00:30Z'));
 	expect(parseTaipei('2026-11-29T09:00:00Z')).toBe(Date.parse('2026-11-29T09:00:00Z'));
 	for (const bad of ['2026-02-30T09:00', '2026-11-29T25:00', 'tomorrow', '2026-11-29']) expect(parseTaipei(bad)).toBeNull();
+	// Written out with a plain space, whatever space this ICU puts between the date and the time.
+	expect(taipeiText(Date.parse('2026-11-28T16:05:09Z'))).toBe('2026/11/29 00:05:09');
 });
 
 test('收尾規則: a one-shot task is 已完成; a reusable one is 已到期 after a timeout handoff or a success past the deadline, else it waits again', () => {
