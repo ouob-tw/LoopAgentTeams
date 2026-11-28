@@ -296,10 +296,15 @@
 								</div>
 							{/if}
 							<dl>
-								{@render field('種類', task.kind === 'agent' ? 'Agent 任務' : '指令任務')}
-								{@render field('排程', `${scheduleText(task.schedule, task.time)}（Asia/Taipei）`)}
-								{#if task.schedule.type === 'daily' && task.schedule.startDate}
-									{@render field('起算日', task.schedule.startDate)}
+								<!-- An event task's schedule is a filler nothing runs by (#763): not shown as one. -->
+								{#if task.trigger === 'event'}
+									{@render field('種類', 'Agent 任務（事件觸發）')}
+								{:else}
+									{@render field('種類', task.kind === 'agent' ? 'Agent 任務' : '指令任務')}
+									{@render field('排程', `${scheduleText(task.schedule, task.time)}（Asia/Taipei）`)}
+									{#if task.schedule.type === 'daily' && task.schedule.startDate}
+										{@render field('起算日', task.schedule.startDate)}
+									{/if}
 								{/if}
 								{@render field('最久跑多久', `${task.limitMinutes} 分鐘`)}
 								{#if task.agent}
