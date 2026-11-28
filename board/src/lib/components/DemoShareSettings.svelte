@@ -1,7 +1,9 @@
 <script lang="ts">
 	// 示意頁分享 in the settings dialog's 全局設置: which published demos open without the board's
 	// login, one switch each (lib/server/demo-share.ts). Shared ones are listed first, then the
-	// newest, as of when the dialog opened. Read again each time it opens.
+	// newest, as of when the dialog opened. Read again each time it opens. Opened from a demo page's
+	// 分享 button (demo-share-button.ts), it scrolls to that demo's switch and marks its row.
+	import { tick } from 'svelte';
 	import { request } from '#lib/board/api.ts';
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
 
@@ -13,19 +15,34 @@
 	let saving = $state<string | null>(null);
 	let refusal = $state<string | null>(null);
 	let filter = $state('');
+	/** The demo the dialog was opened at, marked until it opens again. */
+	let target = $state<string | null>(null);
+	let list = $state<HTMLUListElement>();
 	let read = 0;
 
 	const shown = $derived(demos?.filter((demo) => demo.name.includes(filter.trim().toLowerCase())) ?? []);
 	const sharedCount = $derived(demos?.filter((demo) => demo.shared).length ?? 0);
 
-	export async function load() {
+	/** Read the list again; with `at`, then scroll to that demo's switch and focus it. */
+	export async function load(at?: string) {
 		const mine = ++read;
+		target = at ?? null;
+		if (at) filter = '';
 		const result = await request<{ demos: Demo[] }>('/api/demo-share');
 		if (mine !== read) return;
 		if (result.ok) {
 			demos = result.value.demos;
 			refusal = null;
+			if (at) await reveal(at);
 		} else if (!result.unpaired) refusal = '讀不到示意頁分享設定，請檢查網路後再試。';
+	}
+
+	async function reveal(name: string) {
+		await tick();
+		const box = [...(list?.querySelectorAll<HTMLInputElement>('input[role="switch"]') ?? [])].find((input) => input.dataset.demo === name);
+		if (!box) return;
+		box.closest('li')?.scrollIntoView({ block: 'center' });
+		box.focus({ preventScroll: true });
 	}
 
 	/** A switch shows what the server holds: one whose save failed goes back. */
@@ -67,13 +84,14 @@
 		{#if demos.length >= FILTER_FROM}
 			<input type="search" aria-label="找示意頁" placeholder="找示意頁" bind:value={filter} />
 		{/if}
-		<ul class="demos" aria-label="示意頁分享">
+		<ul class="demos" aria-label="示意頁分享" bind:this={list}>
 			{#each shown as demo (demo.name)}
-				<li>
+				<li class:target={demo.name === target} aria-current={demo.name === target ? 'true' : undefined}>
 					<label title={demo.name}>
 						<input
 							type="checkbox"
 							role="switch"
+							data-demo={demo.name}
 							checked={demo.shared}
 							disabled={saving !== null || testDevice.view !== null}
 							onchange={(event) => void save(demo.name, event.currentTarget)}
@@ -133,6 +151,13 @@
 	}
 	.demos > .note {
 		padding: 0.6rem 0;
+	}
+	/* The row the dialog was opened at, from that demo page's 分享 button. */
+	.target {
+		margin: 0 -0.6rem;
+		padding: 0 calc(0.6rem - 2px);
+		border: 2px solid var(--text);
+		border-radius: var(--radius);
 	}
 	/* The whole row takes the tap, a finger high (ui-baseline). */
 	label {

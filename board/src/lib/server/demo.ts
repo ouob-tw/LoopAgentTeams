@@ -7,6 +7,7 @@
 import { readdirSync, realpathSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join, sep } from 'node:path';
+import { withShareButton, type ShareButton } from './demo-share-button.ts';
 
 /** The same names `demo.py publish` accepts. */
 const NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -124,8 +125,9 @@ export function listDemos(siteDir: string): string[] {
  *  is `/demo/` on the board's address and `/` on the demo address. A folder's address serves its
  *  `index.html`; nothing is listed. `<base><name>` goes to `<base><name>/` so the page's relative
  *  addresses resolve inside its folder. Anything that is not a file inside the demo's own folder
- *  once links are followed answers 404. */
-export async function serveDemo(siteDir: string, rest: string, search: string, base = '/demo/'): Promise<Response> {
+ *  once links are followed answers 404. With `button` (a logged-in viewer), an HTML file gets the 分享
+ *  button (demo-share-button.ts); every other file, and every file without it, is served as it is. */
+export async function serveDemo(siteDir: string, rest: string, search: string, base = '/demo/', button?: ShareButton): Promise<Response> {
 	const parts = segments(rest);
 	if (!parts || !NAME.test(parts[0])) return missing();
 	const [name, ...inside] = parts;
@@ -138,7 +140,9 @@ export async function serveDemo(siteDir: string, rest: string, search: string, b
 		if (!inside.length) return new Response(null, { status: 308, headers: { location: `${base}${name}/${search}` } });
 		const file = realpathSync(join(own, ...inside));
 		if (!file.startsWith(own + sep) || !statSync(file).isFile()) return missing();
-		return new Response(await readFile(file), { headers: { 'content-type': demoType(file) } });
+		const type = demoType(file);
+		const bytes = await readFile(file);
+		return new Response(button && type.startsWith('text/html') ? withShareButton(bytes, name, button) : bytes, { headers: { 'content-type': type } });
 	} catch {
 		return missing();
 	}

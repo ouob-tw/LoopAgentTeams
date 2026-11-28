@@ -55,6 +55,21 @@ out.row = new URLSearchParams(location.search).get('row');
 addEventListener('load', () => (out.image = String(document.getElementById('dot').naturalWidth)));
 </script>`;
 
+/** A page whose CSS tries to hide, move and restyle the button, under a switch bar as demo.py
+ *  writes it, with more tabs than one row holds on a phone. */
+const HOSTILE = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>d3</title>
+<style>
+lat-demo-share{display:none!important;top:500px!important;left:0!important;z-index:0!important}
+a{color:rgb(255, 0, 0)!important;font-size:40px!important;background:red!important}
+span,svg{display:none!important}
+body *{border:5px solid red!important}
+body{margin:0;font:18px/1.6 sans-serif}
+#variants{position:sticky;top:0;z-index:10;display:flex;gap:8px;flex-wrap:wrap;padding:8px 16px}
+#variants button{font:inherit;padding:6px 14px}
+</style>
+<nav id="variants">${['一眼看懂', '重點報告', '盤點', '品質標準', '實測結果', '補充條文'].map((tab) => `<button>${tab}</button>`).join('')}</nav>
+<main><h1 id="title">TAIHAKKA 客語品質資料報告</h1></main>`;
+
 let fixture: Fixture;
 let proxy: ReturnType<typeof httpsProxy>;
 let dir: string;
@@ -76,6 +91,8 @@ beforeAll(async () => {
 	writeFileSync(join(framed, 'index.html'), FRAMED);
 	writeFileSync(join(framed, 'panel.html'), PANEL);
 	for (const file of ['style.css', 'dot.png', 'f.ttf']) copyFileSync(join(site, file), join(framed, file));
+	mkdirSync(join(dir, 'data', 'site', 'd3'));
+	writeFileSync(join(dir, 'data', 'site', 'd3', 'index.html'), HOSTILE);
 	proxy = httpsProxy(() => fixture.url, NAMES);
 	fixture = await startFixture({
 		env: { LAT_BOARD_DEMO_DIR: join(dir, 'data'), LAT_BOARD_URL: proxy.origin, LAT_BOARD_DEMO_URL: proxy.originOf(NAMES[1]), LAT_BOARD_TRUSTED_PROXIES: '127.0.0.1' }
@@ -149,5 +166,39 @@ test('a demo page shows its own pages in frames, each with its stylesheet and im
 		{ row: '1', image: '1', color: 'rgb(1, 2, 3)' },
 		{ row: '2', image: '1', color: 'rgb(1, 2, 3)' }
 	]);
+	// The button is on the page itself, not on the pages it frames.
+	expect(await tab.eval(`[document, ...[...document.querySelectorAll('iframe')].map((frame) => frame.contentDocument)].map((doc) => doc.querySelectorAll('lat-demo-share').length)`)).toEqual([1, 0, 0]);
 	expect(tab.errors).toEqual([]);
+}, 30_000);
+
+test('the 分享 button stays at the top right as it is, clear of the switch bar’s tabs, and opens the board’s settings at the demo (#745)', async () => {
+	const { tab } = await loggedInChrome('demo-site-button');
+	await tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+	await tab.navigate(`${proxy.origin}/demo/d3/`);
+	await tab.until(`document.querySelector('lat-demo-share')`, 'the 分享 button');
+	const seen = await tab.eval<{ box: { right: number; width: number; height: number }; offRow: number; onTop: boolean; overTabs: string[]; title: boolean }>(`(() => {
+		const host = document.querySelector('lat-demo-share');
+		const box = host.getBoundingClientRect();
+		const meets = (r) => r.left < box.right && r.right > box.left && r.top < box.bottom && r.bottom > box.top;
+		return {
+			box: { right: Math.round(innerWidth - box.right), width: Math.round(box.width), height: Math.round(box.height) },
+			offRow: (() => { const first = document.querySelector('#variants button').getBoundingClientRect(); return Math.abs(first.top + first.height / 2 - (box.top + box.height / 2)); })(),
+			onTop: document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2) === host,
+			overTabs: [...document.querySelectorAll('#variants button')].filter((tab) => meets(tab.getBoundingClientRect())).map((tab) => tab.textContent),
+			title: meets(document.getElementById('title').getBoundingClientRect())
+		};
+	})()`);
+	expect(seen.onTop).toBe(true);
+	expect(seen.overTabs).toEqual([]);
+	expect(seen.title).toBe(false);
+	// The page's rules changed nothing: 32px high, its label shown, at the window's right, in line
+	// with the bar's first row of tabs.
+	expect(seen.box.height).toBe(32);
+	expect(seen.box.right).toBe(8);
+	expect(seen.offRow).toBeLessThanOrEqual(1);
+	expect(seen.box.width).toBeGreaterThan(60);
+	expect(seen.box.width).toBeLessThan(110);
+	await tab.pointerClick('lat-demo-share');
+	await tab.until(`location.origin === ${JSON.stringify(proxy.origin)} && document.activeElement?.dataset?.demo === 'd3'`, 'the board’s settings at d3’s switch');
+	expect(await tab.eval(`({ open: document.querySelector('dialog[aria-labelledby="settings-title"]').open, marked: document.querySelector('li[aria-current="true"]')?.textContent.trim(), search: location.search })`)).toEqual({ open: true, marked: 'd3', search: '' });
 }, 30_000);

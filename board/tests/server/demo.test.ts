@@ -112,6 +112,23 @@ test('logged in, the page is served sandboxed, not stored and without a referrer
 	expect(response.headers.get('set-cookie') ?? '').not.toContain('lat_board_device');
 });
 
+test('logged in, the page carries the 分享 button to the board’s settings, shared or not; its other files are as published (#745)', async () => {
+	const published = '<!doctype html><title>d1</title><link rel="stylesheet" href="style.css"><p>hello demo</p>';
+	const page = await (await fixture.fetch('/demo/d1/', { cookie })).text();
+	expect(page.startsWith(published)).toBe(true);
+	expect(page.slice(published.length)).toContain('href=\\"/?demo-share=d1\\"');
+	expect(page).toContain('\\u5206\\u4eab');
+	expect(await (await fixture.fetch('/demo/d1/style.css', { cookie })).text()).toBe('p{color:red}');
+	const share = (shared: boolean) => fixture.fetch('/api/demo-share', { cookie, method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'd1', shared }) });
+	expect((await share(true)).status).toBe(200);
+	try {
+		expect(await (await fixture.fetch('/demo/d1/', { cookie })).text()).toContain('\\u5df2\\u5206\\u4eab');
+		expect(await (await fixture.fetch('/demo/d1/')).text()).toBe(published);
+	} finally {
+		await share(false);
+	}
+});
+
 test('the page’s own files come with the type their extension names, also sandboxed', async () => {
 	const css = await fixture.fetch('/demo/d1/style.css', { cookie });
 	expect(css.headers.get('content-type')).toBe('text/css; charset=utf-8');
