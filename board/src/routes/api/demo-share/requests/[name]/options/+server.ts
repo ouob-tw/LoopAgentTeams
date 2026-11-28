@@ -8,15 +8,17 @@ import type { RequestHandler } from './$types';
 
 /** The start of confirming an agent's request to share a demo (a test device is refused before
  *  this runs): what the browser is to sign, with any registered passkey that checks who holds it.
- *  The challenge is for this device and this demo only. Only over HTTPS at the board's address. */
+ *  The body names the published folder the card showed (`folder`); the challenge is for this
+ *  device and that version of the demo only. Only over HTTPS at the board's address. */
 export const POST: RequestHandler = audited(
 	'demo_share_confirm',
-	async ({ params, locals }) => {
+	async ({ params, request, locals }) => {
 		const { config } = getBoard();
 		const site = config.passkeySite;
 		if (!site || !locals.https) return json({ error: 'passkey_unavailable', origin: site?.origin ?? null }, { status: 409 });
-		if (!openRequest({ requestsDir: config.demoRequestsDir, siteDir: config.demoSiteDir, stateDir: config.stateDir }, params.name))
-			return json({ error: 'no_request' }, { status: 404 });
+		const folder: unknown = (await request.json().catch(() => null))?.folder;
+		const open = openRequest(config, params.name);
+		if (!open || open.folder !== folder) return json({ error: 'no_request' }, { status: 404 });
 		let passkeys: Passkey[];
 		try {
 			passkeys = listPasskeys(config.stateDir);
@@ -27,7 +29,7 @@ export const POST: RequestHandler = audited(
 		if (!passkeys.length) return json({ error: 'no_passkey' }, { status: 409 });
 		const options = await loginOptions(site, passkeys, 'alone');
 		const now = config.now();
-		keepConfirmChallenge(options.challenge, locals.device!.id, params.name, now + TIMEOUT_MS, now);
+		keepConfirmChallenge(options.challenge, { deviceId: locals.device!.id, name: params.name, folder: open.folder }, now + TIMEOUT_MS, now);
 		return json(options);
 	},
 	{ start: true }

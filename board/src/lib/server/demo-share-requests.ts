@@ -8,6 +8,7 @@
 import { readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import type { DemoShareRequest } from '../board/types.ts';
+import type { BoardConfig } from './config.ts';
 import { isDemoName } from './demo.ts';
 import { isSharedDemo } from './demo-share.ts';
 
@@ -36,7 +37,7 @@ export function publishedFolder(siteDir: string, name: string): string | null {
 
 /** The request file for `name` as written, or null when there is none or it is not one. Its text is
  *  an agent's: only a string name, folder, time and asker come out of it. */
-function readRequest(dir: string, name: string): (DemoShareRequest & { folder: string }) | null {
+function readRequest(dir: string, name: string): DemoShareRequest | null {
 	if (!isDemoName(name)) return null;
 	try {
 		const file = JSON.parse(readFileSync(join(dir, `${name}.json`), 'utf8')) as Record<string, unknown> | null;
@@ -49,20 +50,22 @@ function readRequest(dir: string, name: string): (DemoShareRequest & { folder: s
 	}
 }
 
+/** The folders a request is read against: the requests', the published demos', the share list's. */
+type Dirs = Pick<BoardConfig, 'demoRequestsDir' | 'demoSiteDir' | 'stateDir'>;
+
 /** The request for `name` when it can be confirmed now: about the page published now, which is not
  *  shared yet. */
-export function openRequest(dirs: { requestsDir: string; siteDir: string; stateDir: string }, name: string): DemoShareRequest | null {
-	const request = readRequest(dirs.requestsDir, name);
-	if (!request || publishedFolder(dirs.siteDir, name) !== request.folder || isSharedDemo(dirs.stateDir, dirs.siteDir, name)) return null;
-	const { folder: _folder, ...shown } = request;
-	return shown;
+export function openRequest(dirs: Dirs, name: string): DemoShareRequest | null {
+	const request = readRequest(dirs.demoRequestsDir, name);
+	if (!request || publishedFolder(dirs.demoSiteDir, name) !== request.folder || isSharedDemo(dirs.stateDir, dirs.demoSiteDir, name)) return null;
+	return request;
 }
 
 /** The requests that can be confirmed now, oldest first. None when the folder cannot be read. */
-export function openRequests(dirs: { requestsDir: string; siteDir: string; stateDir: string }): DemoShareRequest[] {
+export function openRequests(dirs: Dirs): DemoShareRequest[] {
 	let names: string[];
 	try {
-		names = readdirSync(dirs.requestsDir).filter(isRequestFile).map((file) => file.slice(0, -'.json'.length));
+		names = readdirSync(dirs.demoRequestsDir).filter(isRequestFile).map((file) => file.slice(0, -'.json'.length));
 	} catch {
 		return [];
 	}
@@ -84,21 +87,24 @@ export function removeRequest(requestsDir: string, name: string): boolean {
 	}
 }
 
-/** Passkey challenges given to confirm a request, each for one device and one demo, with when it
- *  ends. In memory only: a restart means pressing 確認公開 again. */
-const challenges = new Map<string, { deviceId: string; name: string; endsAt: number }>();
+/** What a confirmation is for: one device, one demo, one published folder of it. */
+export type ConfirmFor = { deviceId: string; name: string; folder: string };
 
-/** Remember a challenge given to the device `deviceId` to confirm the request for `name`. */
-export function keepConfirmChallenge(challenge: string, deviceId: string, name: string, endsAt: number, now: number): void {
+/** Passkey challenges given to confirm a request, with what each is for and when it ends. In memory
+ *  only: a restart means pressing 確認公開 again. */
+const challenges = new Map<string, ConfirmFor & { endsAt: number }>();
+
+/** Remember a challenge given to confirm a request. */
+export function keepConfirmChallenge(challenge: string, purpose: ConfirmFor, endsAt: number, now: number): void {
 	for (const [key, kept] of challenges) if (kept.endsAt <= now) challenges.delete(key);
 	while (challenges.size >= CHALLENGES_MAX) challenges.delete(challenges.keys().next().value!);
-	challenges.set(challenge, { deviceId, name, endsAt });
+	challenges.set(challenge, { ...purpose, endsAt });
 }
 
-/** Whether this challenge was given to this device for this demo and is still good. It is answered
+/** Whether this challenge was given for this very confirmation and is still good. It is answered
  *  once: it is gone after this. */
-export function takeConfirmChallenge(challenge: string, deviceId: string, name: string, now: number): boolean {
+export function takeConfirmChallenge(challenge: string, purpose: ConfirmFor, now: number): boolean {
 	const kept = challenges.get(challenge);
 	challenges.delete(challenge);
-	return kept !== undefined && kept.deviceId === deviceId && kept.name === name && kept.endsAt > now;
+	return kept !== undefined && kept.deviceId === purpose.deviceId && kept.name === purpose.name && kept.folder === purpose.folder && kept.endsAt > now;
 }

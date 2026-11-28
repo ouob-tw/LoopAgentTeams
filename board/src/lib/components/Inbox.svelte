@@ -17,7 +17,7 @@
 		items,
 		asks,
 		alerts,
-		shareRequests = [],
+		shareRequests,
 		currentAlert,
 		onalert,
 		endedAsks,
@@ -43,7 +43,7 @@
 		/** The automation red cards not closed, newest first: on top of both orders. */
 		alerts: AutomationAlert[];
 		/** Agents' requests to share a demo without the login, oldest first. */
-		shareRequests?: DemoShareRequest[];
+		shareRequests: DemoShareRequest[];
 		/** The red card open in the content column. */
 		currentAlert: string | null;
 		onalert: (alert: AutomationAlert) => void;
@@ -76,7 +76,7 @@
 	/** Requests confirmed or rejected here, hidden before the board's next snapshot drops them. A
 	 *  new request for the same demo is another card. */
 	let settled = $state<string[]>([]);
-	const shareKey = (share: DemoShareRequest) => `${share.name}@${share.at}`;
+	const shareKey = (share: DemoShareRequest) => `${share.name}@${share.folder}@${share.at}`;
 	const shares = $derived(shareRequests.filter((share) => !settled.includes(shareKey(share))));
 	const waiting = $derived(alerts.length + shares.length);
 

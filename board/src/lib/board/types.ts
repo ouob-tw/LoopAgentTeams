@@ -241,11 +241,13 @@ export interface BoardSnapshot {
 }
 
 /** An agent's request to share the demo `name` without the login (`demo.py share`): who asked, as
- *  the agent wrote it (empty when it did not say), and when. */
+ *  the agent wrote it (empty when it did not say), when, and the published folder it is about,
+ *  which a confirmation names so it shares only that version. */
 export interface DemoShareRequest {
 	name: string;
 	by: string;
 	at: string;
+	folder: string;
 }
 
 /** The controllers of the roster, then those off it. */

@@ -15,7 +15,7 @@ const ORIGIN = 'https://lat.ouob.net';
 const RP_ID = 'lat.ouob.net';
 const DEMO_PY = resolve(import.meta.dir, '../../../skills/local/ui-choice-demo/scripts/demo.py');
 
-type Requests = { name: string; by: string; at: string }[];
+type Requests = { name: string; by: string; at: string; folder: string }[];
 
 function call(fixture: Fixture, method: string, path: string, { body, cookie, http = false }: { body?: unknown; cookie?: string; http?: boolean } = {}) {
 	return fixture.fetch(path, {
@@ -56,8 +56,10 @@ describe('a demo share asked for by an agent', () => {
 	/** Whether the demo opens without any login. */
 	const open = async (name: string) => (await fixture.fetch(`/demo/${name}/`)).status === 200;
 
-	async function options(name: string, as = cookie) {
-		return call(fixture, 'POST', `/api/demo-share/requests/${name}/options`, { cookie: as });
+	/** Start confirming as a card does: naming the version of the page the board listed. */
+	async function options(name: string, as = cookie, folder?: string) {
+		folder ??= (await requests()).find((request) => request.name === name)?.folder ?? 'none';
+		return call(fixture, 'POST', `/api/demo-share/requests/${name}/options`, { cookie: as, body: { folder } });
 	}
 	async function confirm(name: string, answer: (options: { challenge: string }) => unknown = (given) => passkey.answer(given), as = cookie) {
 		const given = await options(name, as);
@@ -85,7 +87,7 @@ describe('a demo share asked for by an agent', () => {
 		const run = askToShare('d1');
 		expect(run.status).toBe(0);
 		expect(run.stdout).toContain('passkey');
-		expect(await requests()).toEqual([{ name: 'd1', by: 'keti-impl744-nuniva', at: expect.any(String) }]);
+		expect(await requests()).toEqual([{ name: 'd1', by: 'keti-impl744-nuniva', at: expect.any(String), folder: expect.stringMatching(/^\d+:\d+:\d+$/) }]);
 		expect(await shared('d1')).toBe(false);
 		expect(await open('d1')).toBe(false);
 		// Not published: nothing is written.
@@ -127,6 +129,23 @@ describe('a demo share asked for by an agent', () => {
 		expect((await requests()).map((request) => request.name)).toEqual(['d2']);
 		// Signed once: the same request cannot be confirmed again.
 		expect((await options('d1')).status).toBe(404);
+	});
+
+	test('a page published again while the passkey is in use, or since the card was drawn, is not shared', async () => {
+		publish('d5');
+		expect(askToShare('d5').status).toBe(0);
+		const shown = (await requests()).find((request) => request.name === 'd5')!;
+		const given = await (await options('d5')).json();
+		// The agent puts another version in place and asks again before the user's passkey answers.
+		publish('d5');
+		expect(askToShare('d5').status).toBe(0);
+		const swapped = await call(fixture, 'POST', '/api/demo-share/requests/d5/confirm', { cookie, body: { response: passkey.answer(given) } });
+		expect(swapped.status).toBe(403);
+		expect(await shared('d5')).toBe(false);
+		expect(await open('d5')).toBe(false);
+		// A card still showing the old version cannot start a confirmation for the new one.
+		expect((await options('d5', cookie, shown.folder)).status).toBe(404);
+		expect((await call(fixture, 'DELETE', '/api/demo-share/requests/d5', { cookie })).status).toBe(200);
 	});
 
 	test('rejected, the request goes and the page stays behind the login', async () => {

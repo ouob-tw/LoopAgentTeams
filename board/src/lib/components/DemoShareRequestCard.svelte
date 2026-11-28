@@ -16,29 +16,34 @@
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { DemoShareRequest } from '#lib/board/types.ts';
 
-	let { share, ondone }: { share: DemoShareRequest; ondone: (name: string) => void } = $props();
+	let { share, ondone }: { share: DemoShareRequest; ondone: () => void } = $props();
 
 	let busy = $state<'confirm' | 'reject' | null>(null);
 	let failure = $state('');
 	const path = $derived(`/api/demo-share/requests/${encodeURIComponent(share.name)}`);
 
-	/** What a refusal from the server means for this card. */
-	function refused(body: unknown): string {
-		const { error, origin } = (body ?? {}) as { error?: string; origin?: string | null };
+	/** What a failed request means for this card. */
+	function refused(result: { kind: string; body?: unknown }): string {
+		if (result.kind !== 'http') return '沒有送出，請檢查網路後再按一次。';
+		const { error, origin } = (result.body ?? {}) as { error?: string; origin?: string | null };
 		if (error === 'passkey_unavailable') return passkeyBlocked(origin ?? null) || '這裡不能用 passkey，請從看板網址打開。';
 		if (error === 'no_passkey') return '還沒有登記 passkey：到「設定」登記後再確認。';
 		if (error === 'no_request') return '這個申請已經不在了。';
 		if (error === 'passkey_failed') return 'passkey 沒有通過，頁面沒有公開，請再按一次。';
-		return '沒有改到，請檢查網路後再按一次。';
+		return '看板沒有存到，請稍後再按一次。';
 	}
 
 	async function confirm() {
 		busy = 'confirm';
 		failure = '';
-		const options = await request<Parameters<typeof startAuthentication>[0]['optionsJSON']>(`${path}/options`, { method: 'POST' });
+		const options = await request<Parameters<typeof startAuthentication>[0]['optionsJSON']>(`${path}/options`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ folder: share.folder })
+		});
 		if (!options.ok) {
 			busy = null;
-			if (!options.unpaired) failure = refused(options.body);
+			if (!options.unpaired) failure = refused(options);
 			return;
 		}
 		let answer;
@@ -58,8 +63,8 @@
 		busy = null;
 		if (done.ok) {
 			toasts.show('ok', `已公開 ${share.name}`);
-			ondone(share.name);
-		} else if (!done.unpaired) failure = refused(done.body);
+			ondone();
+		} else if (!done.unpaired) failure = refused(done);
 	}
 
 	async function reject() {
@@ -67,8 +72,8 @@
 		failure = '';
 		const done = await request(path, { method: 'DELETE' });
 		busy = null;
-		if (done.ok || (!done.unpaired && (done.body as { error?: string } | null)?.error === 'no_request')) ondone(share.name);
-		else if (!done.unpaired) failure = refused(done.body);
+		if (done.ok || (!done.unpaired && (done.body as { error?: string } | null)?.error === 'no_request')) ondone();
+		else if (!done.unpaired) failure = refused(done);
 	}
 </script>
 

@@ -504,7 +504,7 @@ function createBoard(): Board {
 		const allAgents = rosterNow();
 		settleAsks(config, allAgents.agents);
 		lastAsks = readAsks(config.asksDir, { executionWaitMs: config.askExecutionWaitMs });
-		lastShareRequests = openRequests({ requestsDir: config.demoRequestsDir, siteDir: config.demoSiteDir, stateDir: config.stateDir });
+		lastShareRequests = openRequests(config);
 		// Telling Codex an allowed tool ran goes through the relay, which reads the lists again.
 		if (lastAsks.some((ask) => ask.state === 'executed')) void notifyExecuted(board);
 		herdrRead ||= herdrAgents.ok;
