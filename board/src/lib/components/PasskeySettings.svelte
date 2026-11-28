@@ -273,4 +273,16 @@
 	:global(:root[data-theme='light']) .warn {
 		font-weight: 700;
 	}
+	@media (max-width: 600px) {
+		h4 {
+			margin-bottom: 0.15rem;
+		}
+		ul {
+			gap: 0.25rem;
+			margin-bottom: 0.25rem;
+		}
+		li {
+			padding: 0.25rem 0.5rem;
+		}
+	}
 </style>

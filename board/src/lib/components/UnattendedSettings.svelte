@@ -263,4 +263,22 @@
 	[role='alert'] ul {
 		margin: 0.2rem 0;
 	}
+	@media (max-width: 600px) {
+		.unattended {
+			gap: 0.2rem;
+		}
+		h4 {
+			margin-top: 0.3rem;
+		}
+		h4:first-child {
+			margin-top: 0;
+		}
+		.projects {
+			gap: 0.35rem;
+		}
+		.project {
+			gap: 0.25rem;
+			padding: 0.3rem 0.5rem;
+		}
+	}
 </style>

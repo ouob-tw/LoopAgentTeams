@@ -105,7 +105,7 @@ bun run board devices            # 列出已登入的裝置（ID、登入時間�
 bun run board revoke <裝置 ID>   # 撤銷一台裝置，它會回到登入畫面
 ```
 
-**在瀏覽器登出**：「設定」→「帳號與分享」最下面的「登出」只讓這台裝置登出，效果和對它執行 `revoke` 一樣（測試用登入也是），之後回到登入畫面；其他裝置維持登入。
+**在瀏覽器登出**：「設定」標題列、「關閉」左邊的「登出」（五個分類都看得到）只讓這台裝置登出，效果和對它執行 `revoke` 一樣（測試用登入也是），之後回到登入畫面；其他裝置維持登入。
 
 **登入紀錄**：每次登入與 passkey 的動作都在服務紀錄留一行 JSON，用 `journalctl --user -u lat-board -o cat | grep '"logger":"board.login"'` 查看（只看某一種加 `| grep '"message":"login_password"'`）。
 
