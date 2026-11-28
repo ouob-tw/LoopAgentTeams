@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Five categories in a list on the left (above the content at a phone's width), one shown at a time:
-	// 外觀 and 通知 are this device's; 對話與顯示, 自動化 and 帳號與分享 are marked 所有裝置共用 (its 登出
-	// ends only this device's login). Every panel stays mounted, so each part loads when the dialog
+	// 外觀 and 通知 are this device's; 對話與顯示, 自動化 and 帳號與分享 are marked 所有裝置共用. The header's
+	// 登出 ends only this device's login. Every panel stays mounted, so each part loads when the dialog
 	// opens, whichever category shows.
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import TestDenied from './TestDenied.svelte';
@@ -59,6 +59,7 @@
 	}
 
 	let dialog: HTMLDialogElement;
+	let closeButton: HTMLButtonElement;
 	let preauth = $state() as PreauthSettings;
 	let unattended = $state() as UnattendedSettings;
 	let passkeys = $state() as PasskeySettings;
@@ -69,7 +70,11 @@
 	 *  read; with `{ demo }`, in 帳號與分享 at that demo's 示意頁分享 switch, once the list is read. */
 	export function open(at?: string | { demo: string }, start: Category = 'look') {
 		const anchor = typeof at === 'string' ? at : undefined;
-		if (!dialog.open) dialog.showModal();
+		if (!dialog.open) {
+			dialog.showModal();
+			// Not the first button, 登出: a second Enter must not end the login.
+			closeButton.focus();
+		}
 		void select(typeof at === 'object' ? 'account' : start);
 		void unattended.load();
 		void passkeys.load();
@@ -202,8 +207,14 @@
 	<div class="body">
 		<header>
 			<h2 id="settings-title">設定</h2>
-			<button class="close" onclick={() => dialog.close()}>關閉</button>
+			<button class="logout" disabled={loggingOut} onclick={() => void logout()}>
+				<LogOut size="1em" aria-hidden="true" />{loggingOut ? '登出中…' : '登出'}
+			</button>
+			<button class="close" bind:this={closeButton} onclick={() => dialog.close()}>關閉</button>
 		</header>
+		{#if logoutFailed}
+			<p class="failed" role="alert">沒有登出，請再試一次。</p>
+		{/if}
 
 		<div class="wrap">
 			<div class="tabs" role="tablist" aria-label="設定分類" aria-orientation={narrow.current ? 'horizontal' : 'vertical'} bind:this={tabs}>
@@ -243,15 +254,6 @@
 							<TestDenied />
 							<PasskeySettings bind:this={passkeys} />
 							<DemoShareSettings bind:this={demoShare} />
-							<div class="session">
-								<button class="logout" disabled={loggingOut} onclick={() => void logout()}>
-									<LogOut size="1em" aria-hidden="true" />{loggingOut ? '登出中…' : '登出'}
-								</button>
-								{#if logoutFailed}
-									<!-- The last thing in a scrolling box, so it brings itself into view. -->
-									<p class="failed" role="alert" {@attach (line) => line.scrollIntoView({ block: 'nearest' })}>沒有登出，請再試一次。</p>
-								{/if}
-							</div>
 						{/if}
 					</div>
 				{/each}
@@ -289,11 +291,12 @@
 	}
 	header {
 		display: flex;
-		justify-content: space-between;
+		gap: 0.5rem;
 		align-items: center;
 	}
+	/* The title takes the room left, so 登出 and 關閉 stand together at the end. */
 	h2 {
-		margin: 0;
+		margin: 0 auto 0 0;
 		font-size: max(1rem, var(--min-font, 0px));
 	}
 	/* The list stays; only the category beside it scrolls. The floor keeps it usable on a very short
@@ -359,7 +362,6 @@
 	}
 	h4 {
 		margin: 0 0 0.35rem;
-		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
 	.choices {
@@ -373,14 +375,14 @@
 		font-family: var(--mono);
 		text-align: center;
 	}
+	/* ui-baseline's smallest text, for what the settings' parts draw smaller elsewhere. */
+	.panels :global(:is(h4, p, ul, pre, code, input, textarea, .chip, .note, .test-denied, .allow button, .mark)) {
+		font-size: max(1rem, var(--min-font, 0px));
+	}
 	/* A phone's smallest tap target at every overall size: 登出 ends the login. */
 	.close,
 	.logout {
 		min-height: max(44px, 2.75rem);
-	}
-	.session {
-		padding-top: 0.9rem;
-		border-top: 1px solid var(--line);
 	}
 	.logout {
 		display: inline-flex;
@@ -388,31 +390,47 @@
 		align-items: center;
 	}
 	.failed {
-		margin: 0.35rem 0 0;
+		margin: 0;
 		color: var(--danger);
 		font-size: max(1rem, var(--min-font, 0px));
 	}
 	.note {
 		margin: 0.35rem 0 0;
-		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
+	/* A phone gives the dialog the whole screen, at one height for every category, with little room
+	   between things. */
 	@media (max-width: 600px) {
+		dialog {
+			width: 100%;
+			max-width: 100%;
+			height: 100dvh;
+			max-height: 100dvh;
+			margin: 0;
+			border: 0;
+			border-radius: 0;
+		}
 		.body {
-			padding: 0.75rem 0.5rem;
+			flex: 1;
+			gap: 0.25rem;
+			padding: 0.25rem;
 		}
 		header {
 			padding: 0 0.4rem;
 		}
 		.wrap {
+			flex: 1;
 			flex-direction: column;
+			gap: 0.25rem;
+			padding-top: 0.25rem;
 		}
 		/* Three to a row where they fit, and each wrapped row fills the width. */
 		.tabs {
 			flex-direction: row;
 			flex-wrap: wrap;
+			gap: 0.125rem;
 			overflow: visible;
-			padding: 0 0 0.5rem;
+			padding: 0 0 0.25rem;
 			border-right: 0;
 			border-bottom: 1px solid var(--line);
 		}
@@ -421,8 +439,27 @@
 			padding-inline: 0.25rem;
 			text-align: center;
 		}
+		/* The side padding stays: highlight outlines need it inside the scrolling box. */
 		.panels {
 			min-height: 0;
+		}
+		.panel {
+			gap: 0.5rem;
+		}
+		h4 {
+			margin-bottom: 0.15rem;
+		}
+		.note {
+			margin-top: 0.15rem;
+		}
+		.panels :global(:is(button, input:not([type='checkbox'], [type='radio']))) {
+			min-width: max(44px, 2.75rem);
+			min-height: max(44px, 2.75rem);
+		}
+		/* The 允許 button shares its group's class and so is a flex box: keep both labels at mid-height. */
+		.panels :global(.allow > button) {
+			display: flex;
+			align-items: center;
 		}
 	}
 </style>

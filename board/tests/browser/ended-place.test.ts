@@ -68,11 +68,12 @@ async function openAt(y: number) {
 		row.style.top = '${y}px';
 		row.style.left = '20px';
 	})()`);
-	// The page may not have taken over its buttons yet: click until it has.
-	await until(`(document.querySelector('.panel') || document.querySelector('.people .trigger').click()) && document.querySelector('.panel')`);
+	// The page may not have taken over its buttons yet: click until it has. Looked for under the roster:
+	// the settings dialog, always in the page, has panels of its own.
+	await until(`(document.querySelector('.people .panel') || document.querySelector('.people .trigger').click()) && document.querySelector('.people .panel')`);
 	return evaluate<{ row: { top: number; bottom: number }; panel: { top: number; bottom: number; height: number }; inner: number; scrolls: boolean; last: boolean; margin: number }>(`(() => {
 		const row = document.querySelector('.people .trigger').getBoundingClientRect();
-		const panel = document.querySelector('.panel');
+		const panel = document.querySelector('.people .panel');
 		const box = panel.getBoundingClientRect();
 		panel.scrollTop = panel.scrollHeight;
 		const cards = panel.querySelectorAll('.person');
@@ -121,7 +122,7 @@ test.skipIf(!CHROME)('a resized window puts the open pop-up back inside the scre
 	await openAt(420);
 	await send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 500, deviceScaleFactor: 1, mobile: false });
 	await until(`innerHeight === 500`);
-	const box = await evaluate<{ top: number; bottom: number }>(`(() => { const b = document.querySelector('.panel').getBoundingClientRect(); return { top: b.top, bottom: b.bottom }; })()`);
+	const box = await evaluate<{ top: number; bottom: number }>(`(() => { const b = document.querySelector('.people .panel').getBoundingClientRect(); return { top: b.top, bottom: b.bottom }; })()`);
 	expect(box.top).toBeGreaterThanOrEqual(15.5);
 	expect(500 - box.bottom).toBeGreaterThanOrEqual(15.5);
 	await send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 800, deviceScaleFactor: 1, mobile: false });

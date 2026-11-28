@@ -1,4 +1,4 @@
-// 登出 in the settings dialog's 帳號與分享, in a real browser (headless Chrome, the built board), wide and at a
+// 登出 in the settings dialog's header, left of 關閉 in every category, in a real browser (headless Chrome, the built board), wide and at a
 // phone's width: the button looks like the dialog's other buttons and fits; a logout that gets no
 // answer says so and leaves the device logged in; one that goes through lands on the login screen,
 // where going back or reloading stays, and the host no longer lists the device. With LAT_BOARD_SHOTS
@@ -54,7 +54,9 @@ const lookProblems = `(() => {
 	if (r.height < 44 && width < 761) problems.push('shorter than 44px on a phone: ' + r.height);
 	const close = ${OTHER}.getBoundingClientRect();
 	if (close.height < 44 && width < 761) problems.push('關閉 shorter than 44px on a phone: ' + close.height);
-	if (${BUTTON}.closest('#settings-panel-account') === null) problems.push('not in 帳號與分享');
+	if (button.closest('header') === null) problems.push('not in the header');
+	if (document.querySelectorAll('dialog[open] button.logout').length !== 1) problems.push('more than one 登出');
+	if (r.right > close.left || close.left - r.right > 16 || Math.abs(r.top - close.top) > 1) problems.push('not just left of 關閉');
 	if (document.querySelector('dialog[open] #settings-title').getBoundingClientRect().height > 40) problems.push('title wrapped');
 	const mine = getComputedStyle(button);
 	const theirs = getComputedStyle(${OTHER});
@@ -73,8 +75,6 @@ async function openSettings() {
 			if (tries === 3) throw error;
 		}
 	}
-	await tab.pointerClick('#settings-tab-account');
-	await tab.eval(`${BUTTON}.scrollIntoView({ block: 'center', behavior: 'instant' })`);
 }
 
 const theme = (value: 'light' | 'dark') => tab.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value }] });
@@ -97,6 +97,10 @@ for (const size of SIZES) {
 		await openSettings();
 
 		expect(await tab.eval(`${BUTTON}.textContent.trim()`)).toBe('登出');
+		for (const category of ['push', 'chat', 'automation', 'account', 'look']) {
+			await tab.pointerClick(`#settings-tab-${category}`);
+			expect([category, await tab.eval(lookProblems)]).toEqual([category, []]);
+		}
 		for (const scheme of ['light', 'dark'] as const) {
 			await theme(scheme);
 			expect([scheme, await tab.eval(lookProblems)]).toEqual([scheme, []]);
@@ -111,14 +115,13 @@ for (const size of SIZES) {
 		await tab.until(`document.querySelector('dialog[open] [aria-label="整體大小"] output').textContent === '100%'`, 'the overall size back at its default');
 
 		await tab.send('Emulation.setDeviceMetricsOverride', { width: size.width, height: 420, deviceScaleFactor: 1, mobile: size.width < 761 });
-		await tab.eval(`(() => { const box = document.querySelector('dialog[open] .panels'); box.scrollTop = box.scrollHeight; })()`);
 		// No answer: the button says so and the device stays logged in.
 		await tab.eval(`window.realFetch = window.fetch; window.fetch = (input, init) => String(input).includes('/api/device') ? Promise.reject(new TypeError('Failed to fetch')) : window.realFetch(input, init)`);
 		await tab.pointerClick('dialog[open] button.logout');
-		await tab.until(`document.querySelector('dialog[open] p.failed')?.textContent.trim() === '沒有登出，請再試一次。'`, 'the failure under the button');
+		await tab.until(`document.querySelector('dialog[open] p.failed')?.textContent.trim() === '沒有登出，請再試一次。'`, 'the failure under the header');
 		expect(await tab.eval(`parseFloat(getComputedStyle(document.querySelector('dialog[open] p.failed')).fontSize)`)).toBeGreaterThanOrEqual(16);
 		expect(await tab.eval(`${BUTTON}.disabled`)).toBe(false);
-		expect(await tab.eval(`(() => { const line = document.querySelector('dialog[open] p.failed').getBoundingClientRect(); const box = document.querySelector('dialog[open] .panels').getBoundingClientRect(); return line.top >= box.top - 0.5 && line.bottom <= box.bottom + 0.5; })()`)).toBe(true);
+		expect(await tab.eval(`(() => { const line = document.querySelector('dialog[open] p.failed').getBoundingClientRect(); return line.top >= 0 && line.bottom <= innerHeight; })()`)).toBe(true);
 		expect((await fixture.cli('devices')).stdout).toContain(label);
 		await shot(tab, `${size.width}-2-failed-light`);
 		await theme('dark');

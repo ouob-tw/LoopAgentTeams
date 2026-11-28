@@ -21,7 +21,7 @@ const CATEGORIES = [
 	{ id: 'push', label: '通知', scope: '這台裝置', items: ['推播'] },
 	{ id: 'chat', label: '對話與顯示', scope: '所有裝置共用', items: ['對話翻譯', '用量列'] },
 	{ id: 'automation', label: '自動化', scope: '所有裝置共用', items: ['新主控一開始的模式', '預先授權（全域）'] },
-	{ id: 'account', label: '帳號與分享', scope: '所有裝置共用', items: ['passkey', '示意頁分享', '登出'] }
+	{ id: 'account', label: '帳號與分享', scope: '所有裝置共用', items: ['passkey', '示意頁分享'] }
 ];
 /** How to find each setting in the page; every one must be there once. */
 const ITEMS: Record<string, string> = {
@@ -35,8 +35,7 @@ const ITEMS: Record<string, string> = {
 	新主控一開始的模式: 'section.unattended',
 	'預先授權（全域）': 'section.preauth',
 	passkey: 'section.passkeys',
-	示意頁分享: 'section.share',
-	登出: 'button.logout'
+	示意頁分享: 'section.share'
 };
 const DIALOG = `document.querySelector('dialog[aria-labelledby="settings-title"]')`;
 
@@ -110,6 +109,31 @@ const layoutProblems = `(() => {
 		if ([...rows.values()].some((right) => Math.abs(right - a.right) > 1)) problems.push('a row of the list stops short');
 		if (list.getAttribute('aria-orientation') !== 'horizontal') problems.push('list not said to be horizontal');
 	}
+	// A button taller than its label holds it in the middle.
+	for (const el of dialog.querySelectorAll('button')) {
+		if (!el.checkVisibility() || !el.textContent.trim()) continue;
+		const r = el.getBoundingClientRect();
+		// Each run of text, not its box: a stretched box is centred whatever it holds.
+		const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+		for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+			if (!node.textContent.trim()) continue;
+			const range = document.createRange();
+			range.selectNodeContents(node);
+			const text = range.getBoundingClientRect();
+			if (Math.abs((text.top + text.bottom) / 2 - (r.top + r.bottom) / 2) > 2) problems.push(el.textContent.trim() + ' label off centre');
+		}
+	}
+	// ui-baseline's smallest text, and on a phone its smallest tap target.
+	for (const el of dialog.querySelectorAll('*')) {
+		if (!el.checkVisibility()) continue;
+		const named = el.getAttribute('aria-label') || el.textContent.trim().slice(0, 20);
+		if ([...el.childNodes].some((node) => node.nodeType === 3 && node.textContent.trim()) && parseFloat(getComputedStyle(el).fontSize) < 16) problems.push(named + ' text under 16px');
+		if (width > 600 || !el.matches('button, input:not([type="checkbox"], [type="radio"]), textarea, select, label')) continue;
+		const r = el.getBoundingClientRect();
+		if (r.height < 43.9 || r.width < 43.9) problems.push(named + ' too small to tap');
+	}
+	// A phone's dialog is the whole screen, whichever category shows.
+	if (width <= 600 && (frame.left !== 0 || frame.top !== 0 || Math.abs(frame.width - width) > 0.5 || Math.abs(frame.height - innerHeight) > 0.5)) problems.push('dialog not the whole screen');
 	return problems;
 })()`;
 
@@ -150,6 +174,8 @@ for (const size of SIZES) {
 		await openSettings();
 
 		expect(await tab.eval(state)).toEqual(expected(0));
+		// Opening focuses 關閉, not 登出 before it: a second Enter must not end the login.
+		expect(await tab.eval(`document.activeElement.textContent.trim()`)).toBe('關閉');
 		// No category left alone on a row of its own at a phone's width.
 		if (size.width < 601) expect(await tab.eval(`[...${DIALOG}.querySelectorAll('[role="tab"]')].map((t) => t.offsetTop).filter((top, _, all) => all.filter((other) => other === top).length < 2)`)).toEqual([]);
 		const listTop = () => tab.eval<number>(`${DIALOG}.querySelector('[role="tab"]').getBoundingClientRect().top`);

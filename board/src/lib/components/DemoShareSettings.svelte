@@ -185,4 +185,9 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
+	@media (max-width: 600px) {
+		.share {
+			gap: 0.2rem;
+		}
+	}
 </style>

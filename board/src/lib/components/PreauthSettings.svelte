@@ -156,4 +156,26 @@
 		flex: 1;
 		min-width: 0;
 	}
+	@media (max-width: 600px) {
+		.preauth,
+		.advisor {
+			gap: 0.5rem;
+		}
+		.preauth {
+			padding-top: 0.5rem;
+		}
+		.preauth > .note {
+			margin-top: -0.35rem;
+		}
+		h4 {
+			margin-bottom: 0.15rem;
+		}
+		.branches {
+			margin-top: 0.25rem;
+		}
+		ul {
+			gap: 0.25rem;
+			margin: 0.25rem 0;
+		}
+	}
 </style>

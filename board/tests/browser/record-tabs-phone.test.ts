@@ -97,8 +97,9 @@ type Strip = {
 	window: number;
 };
 
+// The record tabs, under their bar: the settings dialog, always in the page, has tabs of its own.
 const STRIP = `(() => {
-	const strip = document.querySelector('[role="tablist"]');
+	const strip = document.querySelector('.tabbar [role="tablist"]');
 	const bar = strip.parentElement;
 	const box = (element) => element.getBoundingClientRect();
 	const tabs = [...strip.querySelectorAll('[role="tab"]')].map((button) => {
@@ -154,7 +155,7 @@ for (const { page, search, ids, counts, prefix } of PAGES) {
 	test.skipIf(!CHROME)(`${page}'s page at 390px with the largest text: one line a tab, the strip scrolls, the open tab in view`, async () => {
 		await visit(search, 390, 24);
 		// Every count in, as one arriving later widens its tab.
-		await tab.until(`document.querySelectorAll('[role="tab"]').length === ${ids.length} && document.querySelectorAll('[role="tab"] small').length === ${counts} && !!document.querySelector('.translate')`, 'the tab strip and its counts');
+		await tab.until(`document.querySelectorAll('.tabbar [role="tab"]').length === ${ids.length} && document.querySelectorAll('.tabbar [role="tab"] small').length === ${counts} && !!document.querySelector('.translate')`, 'the tab strip and its counts');
 		let shape = await strip();
 		expect(shape.tabs.map((entry) => entry.id)).toEqual([...ids]);
 		for (const entry of shape.tabs) expect({ id: entry.id, lines: entry.lines, oneLine: entry.oneLine }).toEqual({ id: entry.id, lines: 1, oneLine: true });
@@ -166,14 +167,14 @@ for (const { page, search, ids, counts, prefix } of PAGES) {
 		expect(shape.translate!.right).toBeLessThanOrEqual(shape.bar.right);
 
 		// Swiped to the end, the last tab shows; the translation button has not moved.
-		await tab.eval(`document.querySelector('[role="tablist"]').scrollLeft = 1e6`);
+		await tab.eval(`document.querySelector('.tabbar [role="tablist"]').scrollLeft = 1e6`);
 		shape = await strip();
 		expect(shownWhole(shape, ids.at(-1)!)).toBe(true);
 		expect(shape.translate).toMatchObject({ hit: true });
 		expect(shape.page).toBe(shape.window);
 
 		// Back at the start, the last tab opened by a tap is brought into view whole.
-		await tab.eval(`document.querySelector('[role="tablist"]').scrollLeft = 0`);
+		await tab.eval(`document.querySelector('.tabbar [role="tablist"]').scrollLeft = 0`);
 		// Tapped until it opens: a tap before the page is ready does nothing.
 		await tab.until(`(document.querySelector('#${prefix}${ids.at(-1)}').click(), document.querySelector('#${prefix}${ids.at(-1)}').getAttribute('aria-selected') === 'true')`, 'the last tab open');
 		await untilShownWhole(ids.at(-1)!);
@@ -189,7 +190,7 @@ for (const { page, search, ids, counts, prefix } of PAGES) {
 		for (const width of [1280, 390]) {
 			await visit(search, width);
 			// Every count in, as one arriving later widens its tab and can push the last one past the edge.
-			await tab.until(`document.querySelectorAll('[role="tab"]').length === ${ids.length} && document.querySelectorAll('[role="tab"] small').length === ${counts}`, 'the tab strip and its counts');
+			await tab.until(`document.querySelectorAll('.tabbar [role="tab"]').length === ${ids.length} && document.querySelectorAll('.tabbar [role="tab"] small').length === ${counts}`, 'the tab strip and its counts');
 			const shape = await strip();
 			// Only the controller's seven tabs may overflow, and only on a phone.
 			const scrolls = shape.strip.scrollWidth > shape.strip.clientWidth;
@@ -206,7 +207,7 @@ for (const { page, search, ids, counts, prefix } of PAGES) {
 				expect(shape.tabs[0].left).toBeCloseTo(shape.strip.left, 0);
 			} else if (scrolls) {
 				// Not fitting, the strip slides to the last tab, which then shows whole.
-				await tab.eval(`document.querySelector('[role="tablist"]').scrollLeft = 1e6`);
+				await tab.eval(`document.querySelector('.tabbar [role="tablist"]').scrollLeft = 1e6`);
 				expect(shownWhole(await strip(), ids.at(-1)!)).toBe(true);
 				expect((await strip()).page).toBe(shape.window);
 			} else {
@@ -222,10 +223,10 @@ for (const { page, search, ids, counts, prefix } of PAGES) {
 
 test.skipIf(!CHROME)('opening a report from the controller page brings the conversation tab back into view', async () => {
 	await visit('?agent=s-lead', 390, 24);
-	await tab.until(`document.querySelectorAll('[role="tab"] small').length === 4`, 'the tab strip and its counts');
+	await tab.until(`document.querySelectorAll('.tabbar [role="tab"] small').length === 4`, 'the tab strip and its counts');
 	// Clicked until its panel shows: a click before the page is ready does nothing.
 	await tab.until(`(document.querySelector('#tab-reports').click(), !!document.querySelector('#panel-reports:not([hidden]) button.main'))`, 'the reports');
-	await tab.eval(`document.querySelector('[role="tablist"]').scrollLeft = 1e6`);
+	await tab.eval(`document.querySelector('.tabbar [role="tablist"]').scrollLeft = 1e6`);
 	expect(shownWhole(await strip(), 'transcript')).toBe(false);
 	await tab.eval(`document.querySelector('#panel-reports button.main').click()`);
 	await tab.until(`document.querySelector('#tab-transcript').getAttribute('aria-selected') === 'true'`, 'the conversation open');
@@ -242,7 +243,7 @@ test.skipIf(!CHROME)('counts that arrive after the last tab opened bring it back
 	// reports' and the ledger's, which come by other requests.
 	await tab.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/messages?controller=*' }, { urlPattern: '*/api/agents/log*' }] });
 	await tab.navigate(`${fixture.url}/?agent=s-lead`);
-	await tab.until(`document.querySelectorAll('[role="tab"]').length === 7`, 'the tab strip');
+	await tab.until(`document.querySelectorAll('.tabbar [role="tab"]').length === 7`, 'the tab strip');
 	const release = async () => {
 		await tab.send('Fetch.disable');
 		for (const requestId of tab.paused.splice(0)) await tab.send('Fetch.continueRequest', { requestId }).catch(() => {});
@@ -250,9 +251,9 @@ test.skipIf(!CHROME)('counts that arrive after the last tab opened bring it back
 	try {
 		await tab.until(`(document.querySelector('#tab-log').click(), document.querySelector('#tab-log').getAttribute('aria-selected') === 'true')`, 'the last tab open');
 		await untilShownWhole('log');
-		expect(await tab.eval<number>(`document.querySelectorAll('[role="tab"] small').length`)).toBe(2);
+		expect(await tab.eval<number>(`document.querySelectorAll('.tabbar [role="tab"] small').length`)).toBe(2);
 		await release();
-		await tab.until(`document.querySelectorAll('[role="tab"] small').length === 4`, 'the counts');
+		await tab.until(`document.querySelectorAll('.tabbar [role="tab"] small').length === 4`, 'the counts');
 		await untilShownWhole('log');
 	} finally {
 		await release();
@@ -260,7 +261,7 @@ test.skipIf(!CHROME)('counts that arrive after the last tab opened bring it back
 
 	// Slid back to the start by hand, a count that changes leaves the strip there. The new report
 	// is this test's last step: the other tests count one report.
-	await tab.eval(`document.querySelector('[role="tablist"]').scrollLeft = 0`);
+	await tab.eval(`document.querySelector('.tabbar [role="tablist"]').scrollLeft = 0`);
 	const before = (await strip()).strip.scrollLeft;
 	fixture.report('s-lead', { tag: 'DONE', summary: '交付第二張票', hcom_name: 'lead', workspace: fixture.listed()[0].workspace });
 	await fixture.refresh(cookie);

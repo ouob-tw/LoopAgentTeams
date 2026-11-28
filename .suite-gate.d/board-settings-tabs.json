@@ -18,7 +18,10 @@
       "tests": [
         "board/tests/browser/passkey-settings-page.test.ts",
         "board/tests/browser/screen-font.test.ts",
-        "board/tests/browser/theme-follow-system.test.ts"
+        "board/tests/browser/theme-follow-system.test.ts",
+        "board/tests/browser/record-tabs-phone.test.ts",
+        "board/tests/browser/ended-place.test.ts",
+        "board/tests/browser/picker-shape.test.ts"
       ]
     }
   ]
