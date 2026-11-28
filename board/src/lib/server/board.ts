@@ -347,7 +347,8 @@ function createBoard(): Board {
 		stateDir: config.stateDir,
 		latDir: config.latDir,
 		trustFiles: config.trustFiles,
-		procDir: config.procDir,
+		// Event tasks look their process up where the 資源 tab reads processes.
+		procDir: config.procRoot,
 		now: config.now,
 		tickMs: config.automationTickMs,
 		publish: (snapshot) => {
@@ -385,7 +386,8 @@ function createBoard(): Board {
 		latDir: config.latDir,
 		stateDir: config.stateDir,
 		passkeySite: config.passkeySite,
-		procDir: config.procDir,
+		// Event tasks look their process up where the 資源 tab reads processes.
+		procDir: config.procRoot,
 		// An approved proposal becomes a task through the automation's own checks and files.
 		createTask: (approval) => automation.createApproved(approval),
 		taskExists: (taskId) => automation.snapshot().tasks.some((entry) => entry.task.id === taskId),

@@ -248,7 +248,8 @@ function lookAtLog(event: Extract<EventSpec, { type: 'log' }>, wait: EventWait, 
 			}
 		}
 		// A line with no end yet is read again once it has one; one longer than a whole read is
-		// looked at as it is and passed, so the file is never stuck on it.
+		// looked at as it is and passed, so the file is never stuck on it (text across the cut, or a
+		// character split by it, is not matched there).
 		if (lineStart === 0 && read >= LOG_READ_MAX) {
 			const piece = buffer.subarray(0, read).toString('utf8');
 			if ((event.caseSensitive ? piece : piece.toLowerCase()).includes(wanted))

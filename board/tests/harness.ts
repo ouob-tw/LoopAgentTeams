@@ -508,8 +508,6 @@ export async function startFixture(
 		LAT_BOARD_PROPOSALS_DIR: join(dir, 'task-proposals'),
 		LAT_BOARD_PROPOSAL_SOCKET: join(dir, 'task-proposal.sock'),
 		LAT_BOARD_PROPOSAL_ACCEPTOR_COMMAND: JSON.stringify([uvPython(), PROPOSAL_ACCEPTOR]),
-		// Event tasks look processes up here (#763); never the host's own /proc.
-		LAT_BOARD_PROC_DIR: join(dir, 'proc'),
 		// The pd section reads and denies through pd; never the real one or its socket.
 		LAT_BOARD_PD_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-pd.mjs'), dir]),
 		HERDR_PLUGIN_CONFIG_DIR: configDir,

@@ -4,10 +4,11 @@
 // event, the deadline, 立即觸發 or 重試接手 it hands over to a new Agent through the fake hcom and
 // Herdr, as an agent task's run; the handoff's first message, its run record with the attempt's
 // delivery evidence, the task's state and its pushes (logged as `event_task_pushed`) are read back.
-// Processes are looked up in the fixture's own `proc` folder, never the host's. Each test has a
+// Processes are looked up in a folder of the test's own, never the host's /proc. Each test has a
 // board of its own.
-import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { afterEach, expect, test } from 'bun:test';
 import { jsonLines, logged, sleep, type Fixture } from '../harness.ts';
 import { SoftPasskey } from '../soft-passkey.ts';
@@ -20,9 +21,13 @@ const T0 = Date.parse('2026-11-28T01:00:00.000Z');
 const MINUTE = 60_000;
 
 let fixture: Fixture | undefined;
+/** The processes the board looks up: a folder of the test's own, never the host's /proc. */
+let proc = '';
 afterEach(async () => {
 	await fixture?.cleanup();
 	fixture = undefined;
+	if (proc) rmSync(proc, { recursive: true, force: true });
+	proc = '';
 });
 
 interface Board {
@@ -37,12 +42,13 @@ interface Board {
 /** A board at the https address with a LAT controller (ctrl) and a plain agent (luna), a logged-in
  *  device with the board passkey, and a work folder with the handoff's brief. */
 async function setup(env: Record<string, string> = {}): Promise<Board> {
+	proc = mkdtempSync(join(tmpdir(), 'lat-board-event-proc-'));
 	const { board, agents } = await withAgents(
 		[
 			{ name: 'ctrl', client: 'claude' },
 			{ name: 'luna', client: 'codex' }
 		],
-		{ clock: T0, env: { LAT_BOARD_URL: ORIGIN, LAT_BOARD_TRUSTED_PROXIES: '127.0.0.1', TZ: 'UTC', LAT_BOARD_AUTOMATION_TICK_SECONDS: '0.1', LAT_BOARD_AUTOMATION_AGENT_POLL_SECONDS: '0.1', LAT_BOARD_LAUNCH_WAIT_SECONDS: '3', LAT_BOARD_HCOM_TIMEOUT_SECONDS: '3', ...env } },
+		{ clock: T0, env: { LAT_BOARD_PROC_ROOT: proc, LAT_BOARD_URL: ORIGIN, LAT_BOARD_TRUSTED_PROXIES: '127.0.0.1', TZ: 'UTC', LAT_BOARD_AUTOMATION_TICK_SECONDS: '0.1', LAT_BOARD_AUTOMATION_AGENT_POLL_SECONDS: '0.1', LAT_BOARD_LAUNCH_WAIT_SECONDS: '3', LAT_BOARD_HCOM_TIMEOUT_SECONDS: '3', ...env } },
 		(started) => (fixture = started)
 	);
 	const [ctrl, luna] = agents;
@@ -157,13 +163,13 @@ const promptOf = (launch: { args: string[] }) => launch.args[launch.args.indexOf
 const pushes = (board: Fixture) => logged(board.serverOutput(), 'event_task_pushed').map((line) => line.notice);
 const handoffRuns = (view: AutomationTaskView) => view.runs.filter((run): run is AutomationRun & { handoff: NonNullable<AutomationRun['handoff']> } => run.handoff !== undefined);
 
-/** A process the fixture's `proc` folder lists, started at `start` clock ticks. */
-function fakeProcess(board: Fixture, pid: number, start: number) {
+/** A process the test's `proc` folder lists, started at `start` clock ticks. */
+function fakeProcess(pid: number, start: number) {
 	const fields = Array(50).fill('0');
 	fields[0] = 'S';
 	fields[19] = String(start);
-	mkdirSync(join(board.dir, 'proc', String(pid)), { recursive: true });
-	writeFileSync(join(board.dir, 'proc', String(pid), 'stat'), `${pid} (collect logs) ${fields.join(' ')}\n`);
+	mkdirSync(join(proc, String(pid)), { recursive: true });
+	writeFileSync(join(proc, String(pid), 'stat'), `${pid} (collect logs) ${fields.join(' ')}\n`);
 }
 
 /** A file's modification time set on the board's clock. */
@@ -172,7 +178,7 @@ const touchAt = (path: string, time: number) => utimesSync(path, time / 1000, ti
 test('only a controller proposes an event task; the checks refuse what the Spec rules out; the approved task keeps 事件, the controller and the brief copy, and cannot be edited', async () => {
 	const s = await setup();
 	const { board, ctrl, luna, work } = s;
-	fakeProcess(board, 4242, 1000);
+	fakeProcess(4242, 1000);
 
 	const fromAgent = parsed(await submit(board, luna, proposal(work, { type: 'process', pid: 4242 })));
 	expect(fromAgent).toMatchObject({ ok: false, error: 'not-controller', reason: '事件任務只收 LAT 主控的提案' });
@@ -227,14 +233,14 @@ test('only a controller proposes an event task; the checks refuse what the Spec 
 test('程序結束: the same start time waits; gone or a reused PID is the original ended; the handoff names the event, then 已接手 with this attempt\'s session, and a one-shot task is 已完成', async () => {
 	const s = await setup();
 	const { board } = s;
-	fakeProcess(board, 4242, 1000);
+	fakeProcess(4242, 1000);
 	const id = await approved(s, { type: 'process', pid: 4242 });
 	hcomPlan(board, [s.ctrl, s.luna], ['evt-one']);
 	await sleep(500);
 	expect(launches(board)).toHaveLength(0);
 
 	// The PID now belongs to another process: the original ended, the newcomer is not taken for it.
-	fakeProcess(board, 4242, 5000);
+	fakeProcess(4242, 5000);
 	const view = await inState(s, id, 'done');
 	const [run] = handoffRuns(view);
 	expect(run.trigger).toBe('event');
@@ -525,7 +531,7 @@ test('after a restart, events still in evidence hand over; Log lines rotated awa
 	writeFileSync(rotated, 'begin\n');
 	const keptTask = await approved(s, { type: 'log', path: kept, text: 'FINISHED' });
 	const rotatedTask = await approved(s, { type: 'log', path: rotated, text: 'FINISHED' });
-	fakeProcess(board, 777, 42);
+	fakeProcess(777, 42);
 	const processTask = await approved(s, { type: 'process', pid: 777 });
 	hcomPlan(board, [s.ctrl, s.luna], ['evt-k1', 'evt-p1']);
 	await sleep(300);
@@ -535,11 +541,29 @@ test('after a restart, events still in evidence hand over; Log lines rotated awa
 	// Rotated away: a new file under the name, without the line.
 	rmSync(rotated);
 	writeFileSync(rotated, 'next log\n');
-	rmSync(join(board.dir, 'proc', '777'), { recursive: true });
+	rmSync(join(proc, '777'), { recursive: true });
 	await board.start();
 	await inState(s, keptTask, 'done');
 	await inState(s, processTask, 'done');
 	await sleep(500);
 	expect((await viewOf(s, rotatedTask)).event!.state).toBe('waiting');
 	expect(launches(board)).toHaveLength(2);
+});
+
+test('a Log file unreadable when the wait begins counts from its length at the first good read', async () => {
+	const s = await setup();
+	const { board, work } = s;
+	const logFile = join(work, 'logs/locked.log');
+	writeFileSync(logFile, 'READY from before\n');
+	chmodSync(join(work, 'logs'), 0o000);
+	const id = await approved(s, { type: 'log', path: logFile, text: 'READY' });
+	hcomPlan(board, [s.ctrl, s.luna], ['evt-u1']);
+	expect((await viewOf(s, id)).event!.readError).toContain('讀不到 Log 檔');
+	chmodSync(join(work, 'logs'), 0o755);
+	await eventually(async () => !(await viewOf(s, id)).event?.readError, 'the read error to clear');
+	await sleep(400);
+	expect(launches(board)).toHaveLength(0);
+	appendFileSync(logFile, 'READY now\n');
+	await inState(s, id, 'done');
+	expect(promptOf(launches(board)[0])).toContain('比對到的那一行：READY now');
 });

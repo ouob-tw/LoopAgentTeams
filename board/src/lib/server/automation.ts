@@ -1469,8 +1469,11 @@ export function createAutomation(options: {
 						return true;
 					}
 				} else if (at >= deadlineAt) {
+					// The run's job is still finishing: looked at on the next check.
+					if (busy(task.id)) return false;
+					// A Log file is marked at its length now: lines written while the board was off are not seen.
 					const look = lookAt(settings.event, wait, at, procDir);
-					if (look.occurred && !busy(task.id)) {
+					if (look.occurred) {
 						handOff(task, look.occurred);
 						writeWait(task.id, look.wait);
 					} else endWait(task, wait, 'expired', at);
