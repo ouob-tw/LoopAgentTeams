@@ -38,7 +38,7 @@ import { expandHome, validateTask, writeAtomic, writeFirst, type Automation } fr
 import type { BoardConfig, PasskeySite } from './config.ts';
 import type { Device } from './devices.ts';
 import { createApprovals, answerOf, TEST_DEVICE_REFUSED, type Answer } from './task-proposal-approval.ts';
-import { createProposalNotifier, notifyPath, type NotifyTarget } from './task-proposal-notify.ts';
+import { createProposalNotifier, notifyPath, resultPath as resultPathIn, type NotifyTarget } from './task-proposal-notify.ts';
 import { ownEnv } from './hcom.ts';
 import { CONTROLLER_ONLY } from './event-tasks.ts';
 import { exceptionFields, log } from './log.ts';
@@ -122,7 +122,7 @@ export function createProposalStore(options: {
 	const procDir = options.procDir ?? '/proc';
 	const home = options.home ?? homedir();
 	const proposalPath = (id: string) => join(dir, `${id}.json`);
-	const resultPath = (id: string) => join(dir, `${id}.result.json`);
+	const resultPath = (id: string) => resultPathIn(dir, id);
 	const stamp = () => new Date(now()).toISOString();
 
 	function ensureDir() {
@@ -337,9 +337,10 @@ export function createProposalStore(options: {
 			}
 			const endedAt = Date.parse(result.at);
 			if (Number.isFinite(endedAt) && endedAt + PROPOSAL_KEEP_MS <= at) {
+				// The result goes last: a cleanup stopped halfway is still found and finished.
+				rmSync(notifyPath(dir, id), { force: true });
 				rmSync(proposalPath(id), { force: true });
 				rmSync(resultPath(id), { force: true });
-				rmSync(notifyPath(dir, id), { force: true });
 				log('INFO', 'board.proposals', 'task_proposal_removed', { proposal_id: id, status: result.status });
 			}
 		}
