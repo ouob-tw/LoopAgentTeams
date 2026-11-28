@@ -459,6 +459,13 @@ test.skipIf(!CHROME)('1280px: a mouse click anywhere on the bar leaves the list 
 		expect({ x: x - bar.left, shown: await tab.eval<boolean>(SHOWN) }).toEqual({ x: x - bar.left, shown: true });
 		if (x === Math.ceil(bar.left)) await shot(tab, 'my-messages-1280-clicked-bar');
 	}
+	// Closed by Escape with the mouse still on the bar: a click there opens it again.
+	await tab.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+	await tab.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+	await tab.until(`!(${SHOWN})`, 'the list closed by Escape');
+	await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: bar.x, y: bar.y, button: 'left', buttons: 1, clickCount: 1 });
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: bar.x, y: bar.y, button: 'left', clickCount: 1 });
+	await tab.until(SHOWN, 'the list opened by a click on the bar');
 	expect(tab.errors).toEqual([]);
 }, 60_000);
 
