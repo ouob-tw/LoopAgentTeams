@@ -97,6 +97,12 @@ const click = (selector: string) => tab.eval(`(() => { const node = document.que
 const type = (selector: string, value: string) =>
 	tab.eval(`(() => { const node = document.querySelector(${JSON.stringify(selector)}); node.value = ${JSON.stringify(value)}; node.dispatchEvent(new Event('input', { bubbles: true })); node.dispatchEvent(new Event('change', { bubbles: true })); })()`);
 const text = (selector: string) => tab.eval<string>(`document.querySelector(${JSON.stringify(selector)})?.innerText ?? ''`);
+/** 詳細資料 on the task page: its settings, checklist and 刪除任務 start folded (#756). */
+const MORE = '.detail .task header button.more';
+const openDetails = () => click(MORE);
+const folded = () =>
+	tab.eval(`({ expanded: document.querySelector('${MORE}').getAttribute('aria-expanded'), settings: document.querySelectorAll('.detail .task .kv, .detail .task .checklist, .detail .task [data-delete]').length, next: document.querySelector('.detail .task > .actions').nextElementSibling.innerText })`);
+const CLOSED = { expanded: 'false', settings: 0, next: '執行紀錄' };
 const card = (id: string) => text(`.automation [data-task="${id}"]`);
 const fits = () => tab.eval<boolean>(FITS);
 const frame = (width: number, name: string) => shot(tab, `${width}-${name}`);
@@ -152,6 +158,13 @@ for (const width of [1280, 390]) {
 		await click(`.automation [data-task="${ids.backup}"]`);
 		await tab.until(`!!document.querySelector('.detail .task')`, 'the task page');
 		expect(await tab.eval(`location.search`)).toBe(`?automation=${ids.backup}`);
+		// Folded: no settings, checklist or 刪除任務, and 執行紀錄 follows the actions.
+		expect(await folded()).toEqual(CLOSED);
+		expect(await text(MORE)).toBe('詳細資料');
+		expect(await tab.eval<number>(`document.querySelector('${MORE}').getBoundingClientRect().height`)).toBeGreaterThanOrEqual(44);
+		await frame(width, '2a-task-folded');
+		await openDetails();
+		expect(await tab.eval(`document.querySelector('${MORE}').getAttribute('aria-expanded')`)).toBe('true');
 		const page = await text('.detail .task');
 		expect(page).toContain('每月 1–3 日 03:00，成功後本期不再跑');
 		expect(page).toContain('echo 備份完成; touch db-latest.sql.gz');
@@ -175,6 +188,10 @@ for (const width of [1280, 390]) {
 		expect(await offType('.detail .task')).toEqual([]);
 		if (width >= 761) expect(await offType('.automation')).toEqual([]);
 		await frame(width, '2-task');
+		await openDetails();
+		expect(await folded()).toEqual(CLOSED);
+		// Left open here: the next task opened still starts folded.
+		await openDetails();
 		await shot(tab, `${width}-2b-task-runs`, { box: '.detail .run' });
 
 		// A failed run says why.
@@ -190,10 +207,12 @@ for (const width of [1280, 390]) {
 		await tab.until(`document.querySelector('.detail .task')?.dataset.task === '${ids.weekly}'`, 'the weekly task');
 		expect(await text('.detail .run')).toContain('結束碼 2');
 		expect(await text('.detail .run')).toContain('✕ 失敗');
+		expect(await folded()).toEqual(CLOSED);
 
 		// An agent task: its fields and checklist, and 立即執行 open to it like any task.
 		await tab.send('Page.navigate', { url: `${fixture.url}/?automation=${ids.agent}` });
 		await tab.until(`document.querySelector('.detail .task')?.dataset.task === '${ids.agent}'`, 'the agent task');
+		await openDetails();
 		const agentPage = await text('.detail .task');
 		expect(agentPage).toContain('Agent · Codex gpt-6.1-sol · 強度中');
 		expect(agentPage).toContain('docs/monthly/exhibit-report.md');
@@ -261,6 +280,7 @@ for (const width of [1280, 390]) {
 		await type('.detail form [name=folder]', work);
 		await click('.detail form button[type=submit]');
 		await tab.until(`!!document.querySelector('.detail .task')`, 'the task page again');
+		await openDetails();
 		expect(await text('.detail .task')).toContain('每月 1–5 日 10:30，成功後本期不再跑');
 		expect(await tab.eval(`location.search`)).toBe(`?automation=${ids.daily}`);
 		expect(JSON.parse(readFileSync(file, 'utf8')).schedule).toEqual({ type: 'monthly', fromDay: 1, toDay: 5 });

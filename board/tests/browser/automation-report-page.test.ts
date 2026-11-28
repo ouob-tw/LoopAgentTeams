@@ -67,10 +67,15 @@ const text = (selector: string) => tab.eval<string>(`document.querySelector(${JS
 const has = (selector: string) => tab.eval<boolean>(`!!document.querySelector(${JSON.stringify(selector)})`);
 const pressed = (selector: string) => tab.eval<string | null>(`document.querySelector(${JSON.stringify(selector)})?.getAttribute('aria-pressed') ?? null`);
 
+/** 詳細資料 on the task page: the settings start folded (#756). */
+const openDetails = () => click('.detail .task header button.more');
+
 for (const width of [1400, 390]) {
 	test.skipIf(!CHROME)(`${width}px: the editor offers 口頭 / DEMO 網頁, an old task opens as 口頭, DEMO 網頁 saves and shows on the task's page; a command task has no choice`, async () => {
 		await visit(width, `/?automation=${ids.command}`);
 		await tab.until(`!!document.querySelector('.detail .task')`, 'the command task page');
+		await openDetails();
+		expect(await has('.detail .task .kv')).toBe(true);
 		expect(await has('.detail .task [data-report]')).toBe(false);
 		await click('.detail .actions button:nth-child(3)');
 		await tab.until(`!!document.querySelector('.detail form')`, 'the command form');
@@ -79,6 +84,7 @@ for (const width of [1400, 390]) {
 		await tab.send('Page.navigate', { url: `${fixture.url}/?automation=${ids.agent}` });
 		await tab.boardStarted();
 		await tab.until(`!!document.querySelector('.detail .task')`, 'the agent task page');
+		await openDetails();
 		expect(await text('.detail .task [data-report]')).toBe('口頭');
 		await click('.detail .actions button:nth-child(3)');
 		await tab.until(`!!document.querySelector('.detail form')`, 'the form');
@@ -98,7 +104,8 @@ for (const width of [1400, 390]) {
 		expect(await pressed('.detail form [data-report="oral"]')).toBe('false');
 		await shot(tab, `${width}-2-report-demo`, { box: '.detail form #automation-report' });
 		await click('.detail form button.primary');
-		await tab.until(`!!document.querySelector('.detail .task [data-report]')`, 'the task page after saving');
+		await tab.until(`!!document.querySelector('.detail .task')`, 'the task page after saving');
+		await openDetails();
 		expect(await text('.detail .task [data-report]')).toContain('DEMO 網頁');
 		expect(await tab.eval<boolean>(FITS)).toBe(true);
 		await shot(tab, `${width}-3-task-page-demo`, { box: '.detail .task [data-report]' });
@@ -110,7 +117,9 @@ for (const width of [1400, 390]) {
 		expect(await pressed('.detail form [data-report="demo"]')).toBe('true');
 		await click('.detail form [data-report="oral"]');
 		await click('.detail form button.primary');
-		await tab.until(`!!document.querySelector('.detail .task [data-report]') && document.querySelector('.detail .task [data-report]').innerText === '口頭'`, 'the task page back on 口頭');
+		await tab.until(`!!document.querySelector('.detail .task')`, 'the task page after saving again');
+		await openDetails();
+		await tab.until(`document.querySelector('.detail .task [data-report]')?.innerText === '口頭'`, 'the task page back on 口頭');
 		expect((await snapshot()).tasks.find((view) => view.task.id === ids.agent)!.task.agent!.report).toBeUndefined();
 	}, 60_000);
 }

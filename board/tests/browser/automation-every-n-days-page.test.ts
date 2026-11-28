@@ -109,10 +109,14 @@ async function expectRowKept(width: number) {
 	}
 }
 
+/** 詳細資料 on the task page: the settings start folded (#756). */
+const openDetails = () => click('.detail .task header button.more');
+
 for (const width of [1280, 390]) {
 	test.skipIf(!CHROME)(`${width}px: an old every-day task opens with N = 1; N = 2 adds the start date; wrong values are answered under the row; saved it reads 每 2 天 07:00`, async () => {
 		await visit(width, `/?automation=${ids.daily}`);
 		await tab.until(`!!document.querySelector('.detail .task')`, 'the task page');
+		await openDetails();
 		expect(await text('.detail .task')).toContain('每天 07:00，成功後本期不再跑');
 		expect(await has('.detail .task [data-start-date]')).toBe(false);
 		await click('.detail .actions button:nth-child(3)');
@@ -165,6 +169,7 @@ for (const width of [1280, 390]) {
 		await type('.detail form [name=startDate]', '2026-11-22');
 		await click('.detail form button[type=submit]');
 		await tab.until(`!!document.querySelector('.detail .task')`, 'the task page again');
+		await openDetails();
 		expect(await text('.detail .task')).toContain('每 2 天 07:00，成功後本期不再跑');
 		expect(await text('.detail .task [data-start-date]')).toBe('2026-11-22');
 		expect(JSON.parse(readFileSync(file, 'utf8')).schedule).toEqual({ type: 'daily', everyDays: 2, startDate: '2026-11-22' });

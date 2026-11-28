@@ -1,7 +1,7 @@
 <script lang="ts">
-	// One task in the content column: its settings, the checklist, and every run kept, newest
-	// first, each with how it was started, when, how it ended and why, the fixed checks one by one
-	// and the output it left. 立即執行 (停止這次 while it runs), 暫停／恢復 and 編輯 sit at the top;
+	// One task in the content column: its settings, the checklist and 刪除任務 folded behind
+	// 詳細資料 (closed each time a task is opened), then every run kept, newest first, each with how
+	// it was started, when, how it ended and why, the fixed checks one by one and the output it left. 立即執行 (停止這次 while it runs), 暫停／恢復 and 編輯 sit at the top;
 	// missed periods above them, with 立即執行 and 這期就算了. An agent run links to its agent's page:
 	// the live screen while it runs, the conversation after. 刪除任務 sits under the settings: it asks
 	// first, and is off while a run is unfinished.
@@ -24,6 +24,7 @@
 		type AutomationRun,
 		type AutomationTaskView
 	} from '#lib/board/automation.ts';
+	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
 	import { deleteTask, dismissMissed, pauseTask, readOutput, runTask, stopTask } from '#lib/board/automation-actions.ts';
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
@@ -54,6 +55,12 @@
 	} = $props();
 
 	const task = $derived(view.task);
+	const taskId = $derived(view.task.id);
+	/** 詳細資料 is open. Not remembered: another task starts closed. */
+	let details = $derived.by(() => {
+		void taskId;
+		return false;
+	});
 	const at = $derived(timeFormat(timeZone));
 	const runningRun = $derived(view.runs.find(isOpen));
 	const running = $derived(runningRun !== undefined);
@@ -117,6 +124,9 @@
 	<header>
 		<h2>{task.name}</h2>
 		<AutomationState state={view.state} />
+		<button type="button" class="more" aria-expanded={details} onclick={() => (details = !details)}>
+			詳細資料<span class="chevron" class:open={details}><ChevronDown size="1em" /></span>
+		</button>
 	</header>
 	{#if view.missed.length}
 		<section class="missed" data-missed={view.missed.length}>
@@ -149,91 +159,93 @@
 		<p class="notice" role="alert">{notice}</p>
 	{/if}
 
-	<dl class="kv">
-		<dt>種類</dt>
-		<dd>
-			{#if task.kind === 'agent' && task.agent}
-				Agent · {clientName(task.agent.client)} {task.agent.model} · 強度{EFFORT_TEXT[task.agent.effort]}
-			{:else}
-				{kindText(task.kind)}
-			{/if}
-		</dd>
-		<dt>排程</dt>
-		<dd>{scheduleText(task.schedule, task.time)}，成功後本期不再跑</dd>
-		<!-- An every-N-days task names the day its blocks count from (#692). -->
-		{#if task.schedule.type === 'daily' && task.schedule.startDate}
-			<dt>起算日</dt>
-			<dd data-start-date>{task.schedule.startDate}</dd>
-		{/if}
-		{#if task.command}
-			<dt>指令</dt>
-			<dd class="mono">{task.command.command}</dd>
-			<dt>資料夾</dt>
-			<dd class="mono">{task.command.folder}</dd>
-			<dt>固定檢查</dt>
+	{#if details}
+		<dl class="kv">
+			<dt>種類</dt>
 			<dd>
-				{#if task.command.checks.length}
-					<ul class="plain">
-						{#each task.command.checks as check, index (index)}
-							<li>{check.type === 'file' ? `檔案存在：${check.path}` : `輸出含「${check.text}」`}</li>
-						{/each}
-					</ul>
+				{#if task.kind === 'agent' && task.agent}
+					Agent · {clientName(task.agent.client)} {task.agent.model} · 強度{EFFORT_TEXT[task.agent.effort]}
 				{:else}
-					沒有
+					{kindText(task.kind)}
 				{/if}
 			</dd>
-		{:else if task.agent}
-			<dt>資料夾</dt>
-			<dd class="mono">{task.agent.folder}</dd>
-			<dt>任務說明檔</dt>
-			<dd class="mono">{task.agent.brief}</dd>
-			<dt>回報方式</dt>
-			<dd data-report>{task.agent.report === 'demo' ? 'DEMO 網頁' : '口頭'}</dd>
-			{#if task.agent.unattended}
-				{@const grant = task.agent.unattended}
-				<dt>無人模式</dt>
-				<dd data-unattended>
-					<p class="grant-line">開 LAT 主控，目標：{grant.goal}</p>
-					<p class="grant-line">做完條件：</p>
-					<ul class="plain">
-						{#each grant.done as line, index (index)}<li>・{line}</li>{/each}
-					</ul>
-					參謀可以替你決定：{SCOPE_KEYS.filter((key) => grant.scope[key]).map((key) => SCOPE_LABEL[key]).join('、') || '都不代決'}；額度用完或跑滿 {grantHours(task.limitMinutes)} 小時就停。
+			<dt>排程</dt>
+			<dd>{scheduleText(task.schedule, task.time)}，成功後本期不再跑</dd>
+			<!-- An every-N-days task names the day its blocks count from (#692). -->
+			{#if task.schedule.type === 'daily' && task.schedule.startDate}
+				<dt>起算日</dt>
+				<dd data-start-date>{task.schedule.startDate}</dd>
+			{/if}
+			{#if task.command}
+				<dt>指令</dt>
+				<dd class="mono">{task.command.command}</dd>
+				<dt>資料夾</dt>
+				<dd class="mono">{task.command.folder}</dd>
+				<dt>固定檢查</dt>
+				<dd>
+					{#if task.command.checks.length}
+						<ul class="plain">
+							{#each task.command.checks as check, index (index)}
+								<li>{check.type === 'file' ? `檔案存在：${check.path}` : `輸出含「${check.text}」`}</li>
+							{/each}
+						</ul>
+					{:else}
+						沒有
+					{/if}
 				</dd>
+			{:else if task.agent}
+				<dt>資料夾</dt>
+				<dd class="mono">{task.agent.folder}</dd>
+				<dt>任務說明檔</dt>
+				<dd class="mono">{task.agent.brief}</dd>
+				<dt>回報方式</dt>
+				<dd data-report>{task.agent.report === 'demo' ? 'DEMO 網頁' : '口頭'}</dd>
+				{#if task.agent.unattended}
+					{@const grant = task.agent.unattended}
+					<dt>無人模式</dt>
+					<dd data-unattended>
+						<p class="grant-line">開 LAT 主控，目標：{grant.goal}</p>
+						<p class="grant-line">做完條件：</p>
+						<ul class="plain">
+							{#each grant.done as line, index (index)}<li>・{line}</li>{/each}
+						</ul>
+						參謀可以替你決定：{SCOPE_KEYS.filter((key) => grant.scope[key]).map((key) => SCOPE_LABEL[key]).join('、') || '都不代決'}；額度用完或跑滿 {grantHours(task.limitMinutes)} 小時就停。
+					</dd>
+				{/if}
 			{/if}
+			<dt>跑完後請 Agent 檢查</dt>
+			<dd>{task.review.enabled ? `開，用 ${clientName(task.review.client)} ${task.review.model} · 強度${EFFORT_TEXT[task.review.effort]}` : '關'}</dd>
+			<dt>最久跑多久</dt>
+			<dd>{task.limitMinutes} 分鐘</dd>
+			<dt>下次</dt>
+			<dd>{view.nextAt === null ? (task.paused ? '暫停中不會自動跑' : '—') : `${at.full(view.nextAt)}${view.nextAt <= clock.now ? '（已到時間）' : ''}`}</dd>
+		</dl>
+
+		{#if task.review.checklist.length}
+			<h3>驗收清單</h3>
+			<ul class="checklist">
+				{#each task.review.checklist as line, index (index)}<li>{line}</li>{/each}
+			</ul>
 		{/if}
-		<dt>跑完後請 Agent 檢查</dt>
-		<dd>{task.review.enabled ? `開，用 ${clientName(task.review.client)} ${task.review.model} · 強度${EFFORT_TEXT[task.review.effort]}` : '關'}</dd>
-		<dt>最久跑多久</dt>
-		<dd>{task.limitMinutes} 分鐘</dd>
-		<dt>下次</dt>
-		<dd>{view.nextAt === null ? (task.paused ? '暫停中不會自動跑' : '—') : `${at.full(view.nextAt)}${view.nextAt <= clock.now ? '（已到時間）' : ''}`}</dd>
-	</dl>
 
-	{#if task.review.checklist.length}
-		<h3>驗收清單</h3>
-		<ul class="checklist">
-			{#each task.review.checklist as line, index (index)}<li>{line}</li>{/each}
-		</ul>
-	{/if}
-
-	<section class="delete" data-delete>
-		{#if confirmingDelete && !running}
-			<div class="confirm" role="group" aria-label="確認刪除任務">
-				<p><b>要刪除「{task.name}」嗎？</b>它的設定和全部執行紀錄會一起移除，不能復原。</p>
-				<div class="actions">
-					<button type="button" class="remove" disabled={deleting || testDevice.view !== null} onclick={remove}>{deleting ? '刪除中…' : '確定刪除'}</button>
-					<button type="button" disabled={deleting} onclick={() => (confirmingDelete = false)}>取消</button>
+		<section class="delete" data-delete>
+			{#if confirmingDelete && !running}
+				<div class="confirm" role="group" aria-label="確認刪除任務">
+					<p><b>要刪除「{task.name}」嗎？</b>它的設定和全部執行紀錄會一起移除，不能復原。</p>
+					<div class="actions">
+						<button type="button" class="remove" disabled={deleting || testDevice.view !== null} onclick={remove}>{deleting ? '刪除中…' : '確定刪除'}</button>
+						<button type="button" disabled={deleting} onclick={() => (confirmingDelete = false)}>取消</button>
+					</div>
 				</div>
-			</div>
-		{:else}
-			<button type="button" class="ask-delete" disabled={running || busy || testDevice.view !== null} onclick={() => (confirmingDelete = true)}><Trash2 size="1.1em" aria-hidden="true" />刪除任務</button>
-			{#if running}
-				<p class="hint">這次還沒跑完，等它結束或按「停止這次」之後才能刪除。</p>
+			{:else}
+				<button type="button" class="ask-delete" disabled={running || busy || testDevice.view !== null} onclick={() => (confirmingDelete = true)}><Trash2 size="1.1em" aria-hidden="true" />刪除任務</button>
+				{#if running}
+					<p class="hint">這次還沒跑完，等它結束或按「停止這次」之後才能刪除。</p>
+				{/if}
+				<TestDenied />
 			{/if}
-			<TestDenied />
-		{/if}
-	</section>
+		</section>
+	{/if}
 
 	<h3>執行紀錄</h3>
 	{#if view.runs.length === 0}
@@ -331,6 +343,33 @@
 	h3 {
 		margin: 0.4rem 0 0;
 		font-size: inherit;
+	}
+	/* As 詳細資料 on a controller's header, at this page's 16px floor; the 44px tap area takes
+	   little extra room. */
+	.more {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.2rem;
+		min-height: 44px;
+		margin: -0.5rem 0 -0.5rem auto;
+		padding: 0;
+		border: 0;
+		background: none;
+		font-size: max(1rem, var(--min-font, 0px));
+		color: var(--accent);
+		white-space: nowrap;
+	}
+	.chevron {
+		display: inline-flex;
+		transition: transform 0.15s;
+	}
+	.chevron.open {
+		transform: rotate(180deg);
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.chevron {
+			transition: none;
+		}
 	}
 	.actions {
 		display: flex;
