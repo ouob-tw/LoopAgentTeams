@@ -6,11 +6,11 @@
 // a card leaves the runs alone; a subscription the service calls gone is removed and the card stays;
 // one device turning pushes off leaves the other; the key and the subscriptions outlive a restart.
 import { createPublicKey, verify } from 'node:crypto';
-import { decrypt, deviceKeys } from '../fake-push.ts';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { sleep, startFixture, type Fixture } from '../harness.ts';
+import { decrypt, deviceKeys } from '../push-keys.ts';
 import type { AlertsSnapshot, AutomationAlert } from '../../src/lib/board/alerts.ts';
 import type { AutomationSnapshot, AutomationTask } from '../../src/lib/board/automation.ts';
 

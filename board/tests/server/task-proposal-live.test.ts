@@ -5,7 +5,7 @@
 // the task's name, command or folder.
 import { afterAll, afterEach, expect, test } from 'bun:test';
 import { until, type Fixture } from '../harness.ts';
-import { decrypt, deviceKeys } from '../fake-push.ts';
+import { decrypt, deviceKeys } from '../push-keys.ts';
 import { commandTask, parsed, submit, withAgents, type AgentDouble } from '../task-proposal-fixture.ts';
 import { join } from 'node:path';
 import { writeFileSync } from 'node:fs';

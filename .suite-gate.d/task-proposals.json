@@ -12,7 +12,8 @@
       "tests": [
         "board/tests/server/task-proposals.test.ts",
         "board/tests/server/task-proposal-approval.test.ts",
-        "board/tests/unit/task-proposal-cli.test.ts"
+        "board/tests/unit/task-proposal-cli.test.ts",
+        "board/tests/unit/task-proposal-race.test.ts"
       ]
     },
     {
@@ -21,10 +22,12 @@
         "board/src/lib/server/task-proposal-notify.ts",
         "board/src/lib/server/webauthn.ts",
         "board/src/lib/server/passkeys.ts",
-        "board/tests/fake-hcom.mjs"
+        "board/tests/fake-hcom.mjs",
+        "board/tests/push-keys.ts"
       ],
       "tests": [
-        "board/tests/server/task-proposal-approval.test.ts"
+        "board/tests/server/task-proposal-approval.test.ts",
+        "board/tests/unit/task-proposal-approval.test.ts"
       ]
     },
     {
@@ -60,6 +63,49 @@
     },
     {
       "paths": [
+        "board/tests/push-keys.ts"
+      ],
+      "tests": [
+        "board/tests/server/automation-alerts.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/tests/unit/proposal-link-race.ts"
+      ],
+      "tests": [
+        "board/tests/unit/task-proposal-race.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/hooks/task-proposal-acceptor.py",
+        "board/src/lib/server/task-proposals.ts",
+        "board/src/lib/board/task-proposals.ts",
+        "board/src/routes/api/task-proposals/**",
+        "board/tests/task-proposal-fixture.ts",
+        "skills/local/task-proposal/**"
+      ],
+      "tests": [
+        "board/tests/server/task-proposals.test.ts",
+        "board/tests/server/task-proposal-approval.test.ts",
+        "board/tests/unit/task-proposal-cli.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/src/lib/server/task-proposal-approval.ts",
+        "board/src/lib/server/task-proposal-notify.ts",
+        "board/src/lib/server/webauthn.ts",
+        "board/src/lib/server/passkeys.ts",
+        "board/tests/fake-hcom.mjs"
+      ],
+      "tests": [
+        "board/tests/server/task-proposal-approval.test.ts"
+      ]
+    },
+    {
+      "paths": [
         "board/src/lib/components/TaskProposals.svelte",
         "board/src/lib/board/task-proposals.ts",
         "board/src/lib/server/task-proposals.ts",
@@ -69,7 +115,7 @@
         "board/src/lib/board/live.svelte.ts",
         "board/src/routes/+page.svelte",
         "board/src/lib/components/AutomationTask.svelte",
-        "board/tests/fake-push.ts",
+        "board/tests/push-keys.ts",
         "board/tests/browser/task-proposals-page.test.ts",
         "board/tests/server/task-proposal-live.test.ts"
       ],
@@ -77,14 +123,6 @@
         "board/tests/browser/task-proposals-page.test.ts",
         "board/tests/server/task-proposal-live.test.ts",
         "board/tests/unit/task-proposal-text.test.ts"
-      ]
-    },
-    {
-      "paths": [
-        "board/tests/fake-push.ts"
-      ],
-      "tests": [
-        "board/tests/server/automation-alerts.test.ts"
       ]
     },
     {
