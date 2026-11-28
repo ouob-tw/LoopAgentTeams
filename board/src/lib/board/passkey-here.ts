@@ -27,8 +27,9 @@ export function passkeyRefusal(error: unknown, making: boolean): string {
 }
 
 /** Where the page was when the browser refused: the second step after the password, a passkey
- *  alone, registering with the host's code, or registering from the settings. */
-export type PasskeyFlow = 'second_step' | 'alone' | 'host_code' | 'settings';
+ *  alone, registering with the host's code, registering from the settings, or confirming an
+ *  agent's request to share a demo. */
+export type PasskeyFlow = 'second_step' | 'alone' | 'host_code' | 'settings' | 'demo_share';
 
 /** Tell the server the browser refused, by the error's name only, for its log. Nothing waits for it
  *  and a failure to send is ignored. */

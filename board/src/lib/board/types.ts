@@ -233,8 +233,19 @@ export interface BoardSnapshot {
 	closed: ClosedList;
 	/** The board asks in the shared folder, oldest first: each shows on its agent's page. */
 	asks: BoardAsk[];
+	/** Agents' requests to share a demo without the login, oldest first: each a card in the inbox
+	 *  until the user confirms it with a passkey or rejects it. */
+	demoShareRequests: DemoShareRequest[];
 	/** Source failures that cannot be attributed to one controller. */
 	errors: string[];
+}
+
+/** An agent's request to share the demo `name` without the login (`demo.py share`): who asked, as
+ *  the agent wrote it (empty when it did not say), and when. */
+export interface DemoShareRequest {
+	name: string;
+	by: string;
+	at: string;
 }
 
 /** The controllers of the roster, then those off it. */

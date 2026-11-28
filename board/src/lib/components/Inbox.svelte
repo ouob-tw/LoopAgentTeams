@@ -1,10 +1,12 @@
 <script lang="ts">
-	// The inbox list, by time or by project, or the processed items (已處理).
+	// The inbox list, by time or by project, or the processed items (已處理). Agents' requests to
+	// share a demo, then the automation red cards, come first in both orders.
 	import { lastSegment } from '#lib/board/agents.ts';
 	import { mergeProcessed, type AskRow } from '#lib/board/ask-inbox.ts';
 	import { entryKey, groupEntriesByProject, sortEntries, type InboxSort } from '#lib/board/inbox.ts';
 	import type { ArchivePage } from '#lib/board/archive.ts';
-	import type { Controller, InboxItem } from '#lib/board/types.ts';
+	import type { Controller, DemoShareRequest, InboxItem } from '#lib/board/types.ts';
+	import DemoShareRequestCard from './DemoShareRequestCard.svelte';
 	import AskItemRow from './AskItemRow.svelte';
 	import AlertItemRow from './AlertItemRow.svelte';
 	import type { AutomationAlert } from '#lib/board/alerts.ts';
@@ -15,6 +17,7 @@
 		items,
 		asks,
 		alerts,
+		shareRequests = [],
 		currentAlert,
 		onalert,
 		endedAsks,
@@ -39,6 +42,8 @@
 		asks: AskRow[];
 		/** The automation red cards not closed, newest first: on top of both orders. */
 		alerts: AutomationAlert[];
+		/** Agents' requests to share a demo without the login, oldest first. */
+		shareRequests?: DemoShareRequest[];
 		/** The red card open in the content column. */
 		currentAlert: string | null;
 		onalert: (alert: AutomationAlert) => void;
@@ -67,6 +72,13 @@
 	const byId = $derived(new Map(controllers.map((controller) => [controller.id, controller])));
 	// The label opens the information page only while the controller is on the roster.
 	const owner = (item: InboxItem) => (byId.has(item.controllerId) ? () => oncontroller(item.controllerId) : undefined);
+
+	/** Requests confirmed or rejected here, hidden before the board's next snapshot drops them. A
+	 *  new request for the same demo is another card. */
+	let settled = $state<string[]>([]);
+	const shareKey = (share: DemoShareRequest) => `${share.name}@${share.at}`;
+	const shares = $derived(shareRequests.filter((share) => !settled.includes(shareKey(share))));
+	const waiting = $derived(alerts.length + shares.length);
 
 	const processedEntries = $derived(typeof archive === 'object' && archive !== null ? mergeProcessed(archive.items, endedAsks, archive.before !== null) : []);
 
@@ -115,6 +127,9 @@
 		{/if}
 	{/if}
 {:else}
+	{#each shares as share (shareKey(share))}
+		<DemoShareRequestCard {share} ondone={() => (settled = [...settled, shareKey(share)])} />
+	{/each}
 	{#each alerts as alert (alert.id)}
 		<AlertItemRow {alert} current={alert.id === currentAlert} onopen={onalert} />
 	{/each}
@@ -126,7 +141,7 @@
 				<AskItemRow row={entry.row} onopen={onask} />
 			{/if}
 		{:else}
-			{#if !alerts.length}<p class="none">沒有待辦。</p>{/if}
+			{#if !waiting}<p class="none">沒有待辦。</p>{/if}
 		{/each}
 	{:else}
 		{#each groupEntriesByProject(items, asks) as project (project.workspace)}
@@ -151,7 +166,7 @@
 				</div>
 			{/each}
 		{:else}
-			{#if !alerts.length}<p class="none">沒有待辦。</p>{/if}
+			{#if !waiting}<p class="none">沒有待辦。</p>{/if}
 		{/each}
 	{/if}
 {/if}

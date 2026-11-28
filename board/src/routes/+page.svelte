@@ -710,6 +710,7 @@
 					items={listedInbox}
 					asks={openAsks}
 					alerts={openAlerts}
+					shareRequests={board.snapshot.demoShareRequests ?? []}
 					currentAlert={alertId}
 					onalert={openAlert}
 					{endedAsks}

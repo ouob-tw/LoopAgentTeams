@@ -22,7 +22,11 @@
         "board/tests/unit/demo-host-guard.test.ts",
         "board/tests/unit/demo-site-config.test.ts",
         "board/tests/browser/demo-sandbox.test.ts",
-        "board/tests/browser/demo-site.test.ts"
+        "board/tests/browser/demo-site.test.ts",
+        "board/src/lib/server/demo-share-requests.ts",
+        "board/src/lib/components/DemoShareRequestCard.svelte",
+        "board/tests/server/demo-share-request.test.ts",
+        "board/tests/browser/demo-share-request-page.test.ts"
       ],
       "tests": [
         "board/tests/server/demo.test.ts",
@@ -30,7 +34,9 @@
         "board/tests/unit/demo-host-guard.test.ts",
         "board/tests/unit/demo-site-config.test.ts",
         "board/tests/browser/demo-sandbox.test.ts",
-        "board/tests/browser/demo-site.test.ts"
+        "board/tests/browser/demo-site.test.ts",
+        "board/tests/server/demo-share-request.test.ts",
+        "board/tests/browser/demo-share-request-page.test.ts"
       ]
     }
   ]
