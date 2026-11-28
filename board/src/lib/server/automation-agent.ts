@@ -145,8 +145,9 @@ export interface AgentHost {
 	 *  (#657) gives up then, with `cut`. */
 	launch(spec: AgentSpec & { folder: string; prompt: string; tag: string; halted?: () => Cut | null }): Promise<{ ok: true; name: string; workspace: string | null } | { ok: false; reason: string; cut?: Cut }>;
 	list(): Promise<{ ok: true; agents: ListedAgent[] } | { ok: false; reason: string }>;
-	/** The conversation's last reply and its position; null text when there is none yet. */
-	lastReply(client: AgentSpec['client'], sessionId: string): Promise<{ ok: true; text: string | null; seq: number } | { ok: false; reason: string }>;
+	/** The conversation's last reply, its position and when it was written (epoch ms, null when the
+	 *  record does not say); null text when there is none yet. */
+	lastReply(client: AgentSpec['client'], sessionId: string): Promise<{ ok: true; text: string | null; seq: number; time?: number | null } | { ok: false; reason: string }>;
 	/** Every reply after `seq`, oldest first (#700). */
 	repliesAfter(client: AgentSpec['client'], sessionId: string, seq: number): Promise<{ ok: true; replies: { text: string; seq: number }[] } | { ok: false; reason: string }>;
 	/** Whether a Claude conversation still has background work going, or was woken by its end after

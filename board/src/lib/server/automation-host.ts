@@ -121,7 +121,8 @@ export function boardAgentHost(config: BoardConfig, board: () => Board, retry: {
 			if (!read.ok) return { ok: false, reason: read.reason };
 			const items = read.page.items;
 			const reply = items.findLast((item) => item.kind === 'assistant');
-			return { ok: true, text: reply && 'text' in reply ? reply.text : null, seq: reply?.seq ?? -1 };
+			const time = reply?.time ? Date.parse(reply.time) : NaN;
+			return { ok: true, text: reply && 'text' in reply ? reply.text : null, seq: reply?.seq ?? -1, time: Number.isNaN(time) ? null : time };
 		},
 		async repliesAfter(client, sessionId, seq) {
 			const read = await readTranscript(config, client, sessionId);

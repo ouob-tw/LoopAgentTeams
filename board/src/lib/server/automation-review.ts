@@ -4,7 +4,7 @@
 // run's output or its agent's conversation is, and the questions the agent asked on the way. Its
 // reply's last line says PASS or FAIL; the lines before say each item's verdict and why.
 import type { AutomationRun, AutomationTask, ReviewItem, RunReview } from '../board/automation.ts';
-import { timeFormat, TIME_ZONE } from '../board/automation.ts';
+import { RUN_STATUS_TEXT, timeFormat, TIME_ZONE } from '../board/automation.ts';
 import type { AgentEnd } from './automation-agent.ts';
 
 /** The hcom tag of a run's checking agent, beside the run's own `auto-<task>-<run>`; the second
@@ -35,6 +35,8 @@ export interface ReviewInput {
 	transcript?: string | null;
 	/** The second check (#690): the first one, which judged FAIL, and the task agent's reply to it. */
 	recheck?: { first: RunReview; reply: string };
+	/** A check before a rerun (#751): `run` is the period's run that failed, checked at `at`. */
+	precheck?: { at: number };
 }
 
 const fence = (text: string) => {
@@ -42,14 +44,27 @@ const fence = (text: string) => {
 	return `${ticks}\n${text}\n${ticks}`;
 };
 
+/** How the board judged the failed run a check before a rerun is about (#751): as it ended, or a
+ *  success whose check did not pass, with the reason. */
+function failedText(run: AutomationRun): string {
+	const review = run.status === 'success' ? run.review : undefined;
+	// A check that did not finish says so in its reason already.
+	if (review?.status === 'error') return `跑完，但${review.reason ?? '檢查沒有做完'}`;
+	const verdict = review ? '跑完，但檢查沒過' : RUN_STATUS_TEXT[run.status].slice(2);
+	const why = review ? review.reason : run.reason;
+	return why ? `${verdict}：${why}` : verdict;
+}
+
 /** The checking agent's brief. */
-export function reviewBrief({ task, run, folder, taskBrief, output, transcript, recheck }: ReviewInput): string {
+export function reviewBrief({ task, run, folder, taskBrief, output, transcript, recheck, precheck }: ReviewInput): string {
 	const at = timeFormat(TIME_ZONE);
 	const when = `${at.full(run.startedAt)}${run.endedAt ? ` → ${at.full(run.endedAt)}` : ''}（台灣時間）`;
 	const lines = [
 		`# 自動化檢查：${task.name}`,
 		'',
-		`你是檢查 Agent。這個自動化任務剛跑完一次，回報成功；你的工作是照下面的驗收清單判定它是不是真的做到，不是替它補做。`,
+		precheck
+			? `你是檢查 Agent。這是重跑前的核對，不是檢查剛跑完的一次：這期之前那次執行被看板判失敗，之後可能有人把它做完了（使用者接回 Agent 讓它做完，或手動做完）。排程要重跑這期之前（${at.full(precheck.at)}，台灣時間），你的工作是照下面的驗收清單核對「這期的成果是否已經存在」，不是替它補做。全部 PASS 這期就記成功、不重跑；任一條 FAIL 就照常重跑。`
+			: `你是檢查 Agent。這個自動化任務剛跑完一次，回報成功；你的工作是照下面的驗收清單判定它是不是真的做到，不是替它補做。`,
 		'',
 		...(recheck
 			? [
@@ -64,17 +79,18 @@ export function reviewBrief({ task, run, folder, taskBrief, output, transcript, 
 		'- 不得開票：不開 issue 或 PR、不留言、不改任何工單或 PR。',
 		'- 不要問人。查不到證據的那一條判 FAIL，並寫出查不到什麼。',
 		'',
-		'## 這次執行',
+		precheck ? '## 這期判失敗的那次執行' : '## 這次執行',
 		'',
 		`- 任務：${task.name}（${task.kind === 'agent' ? 'Agent 任務' : '指令任務'}）`,
 		`- 時間：${when}`,
+		...(precheck ? [`- 看板判它${failedText(run)}`, '- 判失敗之後的事（使用者接回 Agent 的後續對話、手動做的成果）也算這期的成果，請一併查證。'] : []),
 		`- 工作資料夾：${folder}`
 	];
 	if (task.kind === 'agent') {
 		if (taskBrief) lines.push(`- 任務說明檔：${taskBrief}`);
 		if (transcript) lines.push(`- 執行任務的 Agent 對話紀錄：${transcript}`);
 		else if (run.sessionId) lines.push(`- 執行任務的 Agent 對話：${task.agent?.client === 'codex' ? 'Codex' : 'Claude'} session ${run.sessionId}（找不到紀錄檔位置）`);
-		if (run.agentName) lines.push(`- 執行任務的 Agent：@${run.agentName}（已關閉）`);
+		if (run.agentName) lines.push(`- 執行任務的 Agent：@${run.agentName}${precheck ? '' : '（已關閉）'}`);
 	} else if (task.command) {
 		lines.push('- 指令：', '', fence(task.command.command), '');
 		lines.push(`- 結束碼：${run.exitCode === null ? '被中止' : (run.exitCode ?? '不明')}`);

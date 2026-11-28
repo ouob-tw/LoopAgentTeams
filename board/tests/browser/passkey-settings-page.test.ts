@@ -85,6 +85,7 @@ async function openSettings(url: string, cookie: string) {
 			if (tries === 3) throw error;
 		}
 	}
+	await tab.pointerClick('#settings-tab-account');
 	await tab.eval(`${SECTION}.scrollIntoView({ block: 'center', behavior: 'instant' })`);
 }
 

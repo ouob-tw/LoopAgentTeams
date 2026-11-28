@@ -125,6 +125,7 @@ describe('a board at https://lat.ouob.net with demo pages', () => {
 					if (tries === 3) throw error;
 				}
 			}
+			await tab.pointerClick('#settings-tab-account');
 			await sleep(500);
 			await tab.eval(`document.querySelector('dialog[open] section.passkeys button.add').scrollIntoView({ block: 'center', behavior: 'instant' })`);
 			await sleep(200);

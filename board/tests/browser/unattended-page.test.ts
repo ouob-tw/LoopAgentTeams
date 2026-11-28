@@ -88,7 +88,10 @@ async function browse(size = WIDE): Promise<Tab> {
 
 const save = (tab: Tab, name: string) => shot(tab, name);
 /** Open the settings dialog, once the page has taken over its buttons. */
-const openSettings = (tab: Tab) => tab.until(`(${OPEN_SETTINGS}, document.querySelector('${DIALOG}').open)`, 'the settings dialog');
+const openSettings = async (tab: Tab) => {
+	await tab.until(`(${OPEN_SETTINGS}, document.querySelector('${DIALOG}').open)`, 'the settings dialog');
+	await tab.pointerClick('#settings-tab-automation');
+};
 
 test.skipIf(!CHROME)('the settings dialog sets the global mode, delegations, time limit and each project, on every open page', async () => {
 	const a = await browse();

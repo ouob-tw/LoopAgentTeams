@@ -1,6 +1,6 @@
 <script lang="ts">
 	// The mode a new controller starts in, with what the advisors may decide and the time limit, and
-	// each project's own mode, in the settings dialog's 全局設置. Each change is saved as it is made,
+	// each project's own mode, in the settings dialog's 自動化. Each change is saved as it is made,
 	// through lat-unattended; a change on another device reads them again here.
 	import { request } from '#lib/board/api.ts';
 	import { testDevice } from '#lib/board/test-device.svelte.ts';

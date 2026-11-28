@@ -295,7 +295,7 @@
 					{/if}
 				</ol>
 			{:else if run.review}
-				<AutomationReview review={run.review} now={clock.now} limitMinutes={task.limitMinutes} onopenagent={onopenagent} />
+				<AutomationReview review={run.review} precheck={run.precheck !== undefined} now={clock.now} limitMinutes={task.limitMinutes} onopenagent={onopenagent} />
 			{/if}
 			{#if run.output}
 				<details ontoggle={(event) => openOutput(run, event)}>
