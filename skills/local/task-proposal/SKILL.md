@@ -24,7 +24,7 @@ uv run --no-project python <本技能資料夾>/scripts/task-proposal.py
 
 ## 欄位
 
-和看板「新增任務」表單相同。時間一律是台灣時間（Asia/Taipei）。路徑用完整路徑或 `~` 開頭。
+和看板「新增任務」表單相同。時間一律是台灣時間（Asia/Taipei）。工作資料夾 `folder` 用完整路徑或 `~` 開頭；固定檢查的 `path` 寫完整路徑或相對於 `folder`，不能用 `~`。
 
 ```json
 {
@@ -44,7 +44,7 @@ uv run --no-project python <本技能資料夾>/scripts/task-proposal.py
   - `{"type":"weekly","fromWeekday":1,"toWeekday":7}`（1 是星期一，不能跨過星期日）。
   - `{"type":"monthly","fromDay":1,"toDay":5}`。
 - `kind: "command"`：`"command": {"command": "…", "folder": "…", "checks": [{"type":"file","path":"…"}, {"type":"output","text":"…"}]}`。指令以 `bash -c` 執行，結束碼 0 且檢查全過才算成功。
-- `kind: "agent"`：`client` 是 `claude` 或 `codex`；`effort` 是 `low`、`medium`、`high`；`brief` 是說明檔（相對於 `folder` 或完整路徑）；`report` 可填 `oral`（預設）或 `demo`（發布成網頁）。
+- `kind: "agent"`：`client` 是 `claude` 或 `codex`；`effort` 是 `low`、`medium`、`high`；`brief` 是說明檔（相對於 `folder`、完整路徑或 `~` 開頭）；`report` 可填 `oral`（預設）或 `demo`（發布成網頁）。
 - `agent.unattended`：只有使用者明確要求無人模式時才加。`{"goal":"…","done":["…"],"scope":{"ticket_confirmation":false,"assume_defaults":false,"prototype_decide":false}}`；每一項開啟都是放寬授權，照使用者的話填。
 - `review`：不給就是不檢查（看板表單對 Agent 任務預設開，建議明確填寫）。`enabled: true` 時 `checklist` 至少一條；`client` 建議和任務不同家。
 
@@ -73,7 +73,10 @@ uv run --no-project python <本技能資料夾>/scripts/task-proposal.py
 | 已撤回 | 結束。 |
 | 找不到這個提案 | 核對編號；結束滿 7 天的提案會清掉，到看板自動化分頁確認任務在不在。 |
 | 看板沒在執行 | 沒有送出也沒有撤回。告訴使用者，看板啟動後再執行一次。 |
-| 看板沒有回應 | 可能已收下。請使用者看看板上有沒有這筆，再決定要不要重送。 |
+| 看板沒有回應 | 送出：可能已收下，請使用者看看板上有沒有這筆，再決定要不要重送。撤回：用 `tp status <編號>` 確認。 |
+| 提案格式不對／提案不是 JSON／讀不到提案／提案太大 | 沒有送出。照訊息修正再送。 |
+| 撤回被拒（不是你提的、已經有結果） | 用 `tp status <編號>` 看現況，告訴使用者。 |
+| 看板沒能寫下這個提案 | 回報使用者，不要反覆重送。 |
 | 拒收 | 看板查不到或不認可送出的 Agent。把原因告訴使用者。 |
 
 ## 禁止

@@ -140,7 +140,7 @@ LAT 看板是跑在主機上的網頁服務，電腦與手機用同一個網址�
 
 ```bash
 bunx skills add ouob-tw/LoopAgentTeams \
-  --skill lat hcom-spawn analyst three-tier-testing host-guard retro to-spec to-tickets implement grill-with-docs wayfinder handoff \
+  --skill lat hcom-spawn analyst three-tier-testing host-guard retro task-proposal to-spec to-tickets implement grill-with-docs wayfinder handoff \
   --skill setup-matt-pocock-skills triage to-questionnaire \
   --global --agent claude-code codex
 ```
