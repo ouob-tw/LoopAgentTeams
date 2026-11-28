@@ -146,7 +146,7 @@ const notOfferedHint = (mode: ClaudeMode) =>
 /** Why a whole round went by without the target, as the page shows it. */
 export const notOfferedReason = (target: ClaudeMode) => `按完一整輪都沒有出現 ${CLAUDE_MODE_LABEL[target]}，已停回原本的模式${notOfferedHint(target)}`;
 
-export const BYPASS_RESTART_NOTE = '目前切不到 bypass permissions：選它會直接重新啟動這個 Agent、改用這個模式，同一段對話接回';
+export const BYPASS_RESTART_NOTE = '目前切不到 bypass permissions：選它時仍切不到，就直接重新啟動這個 Agent、改用這個模式，同一段對話接回';
 
 export const BYPASS_TURNED_OFF_REASON = '這個 Agent 啟動時的設定關掉了 bypass permissions（disableBypassPermissionsMode），按 Shift+Tab 也切不到';
 

@@ -135,12 +135,14 @@ function restartIntoBypass(board: Board, agent: KnownAgent) {
 }
 
 /** Pick a Claude mode: Shift+Tab, but bypass permissions that it cannot reach by a restart, when
- *  that is known before or the presses find it (see the top of this file). */
+ *  its launch settings tell that before or the presses find it (see the top of this file). */
 export async function pickClaudePermission(board: Board, agentId: string, target: ClaudeMode) {
 	if (target !== 'bypassPermissions') return switchClaudePermission(board, agentId, target);
 	const agent = (await board.current()).agents.find((candidate) => candidate.id === agentId);
 	const known = agent?.id && restartable(agent) ? { ...agent, id: agent.id } : null;
-	if (known && ((known.hcom === 'linked' && (await bypassOff(board, agentId))) || leftOut(board, agentId, null).has(target))) return restartIntoBypass(board, known);
+	// Known for sure only from the launch settings; a round that left it out may be from before a
+	// restart that added it, so a round is pressed again first.
+	if (known && known.hcom === 'linked' && (await bypassOff(board, agentId))) return restartIntoBypass(board, known);
 	const pressed = await switchClaudePermission(board, agentId, target);
 	if (known && !pressed.body.ok && pressed.body.reason === notOfferedReason(target)) return restartIntoBypass(board, known);
 	return pressed;

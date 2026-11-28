@@ -70,7 +70,10 @@ class AgentControl {
 		if (typeof answer?.ok !== 'boolean') return { ok: false, reason: UNKNOWN_OUTCOME };
 		const logNote = answer.logError ? `（送出紀錄寫入失敗：${answer.logError}）` : '';
 		const abandon = answer && 'abandon' in answer ? answer.abandon : null;
-		return { ok: answer.ok, reason: answer.ok ? logNote || null : answer.reason + logNote, abandon };
+		// A switch's entry has the settings it went to; a relink is an action of its own.
+		const entry = answer && 'entry' in answer ? answer.entry : null;
+		const restarted = !!entry && ('to' in entry || ('action' in entry && entry.action === 'relink'));
+		return { ok: answer.ok, reason: answer.ok ? logNote || null : answer.reason + logNote, abandon, ...(restarted && { restarted }) };
 	}
 
 	/** One attempt; the caller keeps the text when it fails. */

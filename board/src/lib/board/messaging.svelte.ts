@@ -15,6 +15,8 @@ export interface Outcome {
 	reason: string | null;
 	/** After a refused wake: the open resume attempt the user may give up. */
 	abandon?: string | null;
+	/** A permission pick only: the agent was restarted for it (a switch or a relink), not switched in place. */
+	restarted?: boolean;
 }
 
 /** No answer came back, so the message may or may not have been typed into the client. */

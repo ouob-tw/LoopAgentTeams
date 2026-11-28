@@ -228,7 +228,7 @@ test('bypass permissions a whole round never shows restarts the agent at once wi
 	expect(actions()[0]).toMatchObject({ action: 'permission', ok: false, permission: { outcome: 'back' } });
 });
 
-test('bypass permissions a past round left out is restarted for at once, offered with a note that says so', async () => {
+test('bypass permissions a past round left out is offered with a note, and a round is pressed again before the restart', async () => {
 	setHerdr({ screens: { [pane('s-claude')]: claudeScreens(['auto', 'manual', 'acceptEdits', 'plan']) } });
 	lastTurn('s-claude', 'claude-sonnet-5-5');
 	// A round found it missing before, while hcom did not list it, so nothing restarted it.
@@ -243,7 +243,8 @@ test('bypass permissions a past round left out is restarted for at once, offered
 	const presses = keyPresses().length;
 	const switched = await post({ session: 's-claude', mode: 'bypassPermissions' });
 	expect(switched.status).toBe(200);
-	expect(keyPresses()).toHaveLength(presses);
+	// That round may be from before a restart that added it: tried again, then restarted.
+	expect(keyPresses()).toHaveLength(presses + 4);
 	expect(hcomCalls().at(-1)).toEqual(['r', 's-claude', '--terminal', 'herdr', '--no-run-here', '--go', '--dangerously-skip-permissions']);
 });
 

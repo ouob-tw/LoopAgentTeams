@@ -56,14 +56,14 @@
 		return null;
 	});
 
-	async function pick(mode: string, restart: boolean) {
+	async function pick(mode: string) {
 		if (blocked || mode === status?.current) return;
 		const { id: target, name } = agent;
 		const result = await agentControl.switchPermission(target, mode);
 		const done =
 			client === 'codex'
 				? `已切換 ${name} 的權限，等它接回並跑完確認的一回合。`
-				: restart
+				: result.restarted
 					? `已重新啟動 ${name} 並加上 ${label(mode)}，等它接回。`
 					: `已把 ${name} 切換為 ${label(mode)}。`;
 		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? `${done}${result.reason ?? ''}` : (result.reason ?? '切換失敗'));
@@ -81,7 +81,7 @@
 					aria-current={status?.current === mode.id}
 					aria-disabled={!!blocked || !!mode.reason}
 					title={mode.reason ?? mode.restart ?? mode.label}
-					onclick={() => !mode.reason && pick(mode.id, !!mode.restart)}
+					onclick={() => !mode.reason && pick(mode.id)}
 				>
 					{mode.label}{#if mode.reason}<small>不能選</small>{:else if mode.restart}<small>會重開</small>{/if}
 				</button>
