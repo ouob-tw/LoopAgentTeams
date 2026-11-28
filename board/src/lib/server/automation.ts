@@ -31,6 +31,7 @@ import {
 	parseDate,
 	periodOf,
 	pastLimit,
+	precheckDue,
 	succeeded,
 	taskState,
 	TIME_ZONE,
@@ -476,6 +477,8 @@ export function createAutomation(options: {
 	const stoppers = new Map<string, (why: Cut) => void>();
 	/** Children running now, by task. */
 	const children = new Map<string, Promise<void>>();
+	/** Tasks whose failed run's last reply is being read before a rerun (#751). */
+	const prechecking = new Set<string>();
 	/** Their process groups: a command ends with the board, as the spec has it. */
 	const groups = new Set<number>();
 	const endGroups = () => {
@@ -891,6 +894,8 @@ export function createAutomation(options: {
 		if (!host || latest(run).review?.status !== 'checking') return;
 		/** The second check follows the task agent's reply to a first one that judged FAIL (#690). */
 		const round = latest(run).firstReview ? 2 : 1;
+		/** A check before a rerun (#751): of the period's failed run, and it settles the run itself. */
+		const precheck = latest(run).precheck;
 		/** Set when this check's FAIL sends the run back to its agent: the round that follows. */
 		let fixing = false;
 		const update = (fields: Partial<RunReview>) => {
@@ -898,12 +903,15 @@ export function createAutomation(options: {
 			return record(current, { review: { ...current.review!, ...fields } });
 		};
 		const settle = (fields: Partial<RunReview>) => {
-			const finished = update({ endedAt: now(), ...fields });
+			const current = latest(run);
+			const review = { ...current.review!, endedAt: now(), ...fields };
+			// Its PASS is the period's success; otherwise the rerun follows, unless the user stopped it.
+			const finished = record(current, precheck ? { review, endedAt: now(), status: fields.status === 'pass' ? 'success' : fields.ended === 'stopped' ? 'stopped' : 'skipped' } : { review });
 			publish();
 			options.notify?.({ type: 'run-ended', task, run: finished });
 		};
 		const settleEnd = (end: AgentEnd) => {
-			if (end.judged?.verdict === 'fail' && round === 1 && task.kind === 'agent' && task.agent) {
+			if (end.judged?.verdict === 'fail' && round === 1 && !precheck && task.kind === 'agent' && task.agent) {
 				// A first FAIL of an agent task goes back to its agent once; the run stays open, with no
 				// card or push until the round and the second check are over.
 				const current = latest(run);
@@ -930,7 +938,8 @@ export function createAutomation(options: {
 			const folder = expandHome(spec.folder, home);
 			if (!adopted) {
 				if (!isDirectory(folder)) return settle({ status: 'error', reason: `檢查沒有做完：找不到工作資料夾 ${spec.folder}` });
-				const current = latest(run);
+				// Before a rerun the brief is about the period's failed run, not this one.
+				const current = (precheck && (runs.get(task.id) ?? []).find((entry) => entry.id === precheck.of)) || latest(run);
 				const briefName = join('review', task.id, `${run.id}${round === 2 ? '-2' : ''}.md`);
 				const transcript = task.kind === 'agent' && current.sessionId ? await host.transcript(task.agent!.client, current.sessionId).catch(() => null) : undefined;
 				mkdirSync(join(dir, 'review', task.id), { recursive: true, mode: 0o700 });
@@ -944,6 +953,7 @@ export function createAutomation(options: {
 						...(task.agent ? { taskBrief: resolve(folder, expandHome(task.agent.brief, home)) } : {}),
 						...(current.output ? { output: join(dir, current.output) } : {}),
 						transcript,
+						...(precheck ? { precheck: { at: latest(run).startedAt } } : {}),
 						...(round === 2 && current.firstReview ? { recheck: { first: current.firstReview, reply: current.fix?.reply ?? '（看板沒有讀到回應內容）' } } : {})
 					})
 				);
@@ -1134,6 +1144,45 @@ export function createAutomation(options: {
 		await review(task, run, false);
 	}
 
+	/** Before the schedule runs a period again after a run of it failed (#751): whether the period's
+	 *  results are there already. With a checklist, a run of its own opens the checking agent on the
+	 *  failed run, and its PASS is the period's success; without one, a DONE the failed run's agent
+	 *  wrote after the failure is. Otherwise the rerun starts as usual. False when there is nothing to
+	 *  check, and the caller starts the rerun. */
+	function precheck(task: AutomationTask, failed: AutomationRun): boolean {
+		const host = options.agents;
+		if (!host) return false;
+		if (task.review.enabled && task.review.checklist.length) {
+			const at = now();
+			const { client, model, effort } = task.review;
+			const run = record({ ...newRun(task, 'auto', at), status: 'success', precheck: { of: failed.id, by: 'review' }, review: { status: 'checking', startedAt: at, client, model, effort } });
+			children.set(task.id, review(task, run, false).finally(() => children.delete(task.id)));
+			return true;
+		}
+		const { sessionId, endedAt } = failed;
+		if (task.kind !== 'agent' || !task.agent || !sessionId || endedAt === undefined) return false;
+		prechecking.add(task.id);
+		const probe = host
+			.lastReply(task.agent.client, sessionId)
+			.catch(() => null)
+			.then((reply) => {
+				prechecking.delete(task.id);
+				children.delete(task.id);
+				const current = tasks.get(task.id);
+				if (closed || !current || current.paused) return;
+				const repliedAt = reply?.ok && reply.text !== null && typeof reply.time === 'number' && reply.time > endedAt && verdictOf(reply.text)?.status === 'success' ? reply.time : null;
+				if (repliedAt === null) start(current, 'auto');
+				else {
+					const at = now();
+					const passed = record({ ...newRun(current, 'auto', at), endedAt: at, status: 'success', sessionId, precheck: { of: failed.id, by: 'reply', repliedAt } });
+					options.notify?.({ type: 'run-ended', task: current, run: passed });
+				}
+				publish();
+			});
+		children.set(task.id, probe);
+		return true;
+	}
+
 	/** Watch on the agent runs the board was watching when it stopped. */
 	function adopt(): void {
 		for (const [task, run] of adopted) {
@@ -1202,12 +1251,18 @@ export function createAutomation(options: {
 		if (checked !== at) writeAtomic(checkedFile, new Date(at).toISOString() + '\n');
 		for (const task of tasks.values()) {
 			if (!runnable(task)) continue;
-			const due = dueToday(task, runs.get(task.id) ?? [], at);
+			const own = runs.get(task.id) ?? [];
+			// A check before a rerun is not the day's try: the rerun waits for its verdict (#751).
+			if (prechecking.has(task.id) || own.some((run) => run.precheck && isOpen(run))) continue;
+			const due = dueToday(task, own, at);
 			if (due === null || at < due) continue;
 			changed = true;
 			if (busy(task.id)) {
-				record({ ...newRun(task, 'auto', at), endedAt: at, status: 'skipped', reason: (runs.get(task.id) ?? []).some((run) => openAsk(run)) ? '上一次還在等你回覆' : '上一次還在跑' });
-			} else start(task, 'auto');
+				record({ ...newRun(task, 'auto', at), endedAt: at, status: 'skipped', reason: own.some((run) => openAsk(run)) ? '上一次還在等你回覆' : '上一次還在跑' });
+			} else {
+				const failed = precheckDue(task, own, at);
+				if (!failed || !precheck(task, failed)) start(task, 'auto');
+			}
 		}
 		publish(changed);
 	}

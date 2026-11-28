@@ -3,6 +3,7 @@
 	// once it judged, its conclusion and each checklist item with ✓ or ✕ and why; when it ended
 	// without a verdict, why. Its conversation is linked like a task's agent's. A run sent back to its
 	// agent after a failed check (#690) shows its first and second check by `round`; the second is final.
+	// A check before a rerun (#751) is titled as one.
 	import type { RunReview } from '#lib/board/automation.ts';
 
 	let {
@@ -10,10 +11,11 @@
 		now,
 		limitMinutes,
 		round,
+		precheck = false,
 		onopenagent
-	}: { review: RunReview; now: number; limitMinutes: number; round?: 1 | 2; onopenagent: (sessionId: string) => void } = $props();
+	}: { review: RunReview; now: number; limitMinutes: number; round?: 1 | 2; precheck?: boolean; onopenagent: (sessionId: string) => void } = $props();
 
-	const title = $derived(round === 1 ? '第一次檢查' : round === 2 ? '第二次檢查' : '檢查官的結論');
+	const title = $derived(precheck ? '重跑前核對' : round === 1 ? '第一次檢查' : round === 2 ? '第二次檢查' : '檢查官的結論');
 
 	const passed = $derived((review.items ?? []).filter((item) => item.ok).length);
 	const open = (event: MouseEvent) => {
@@ -24,7 +26,7 @@
 
 <div class="review" data-review={review.status}>
 	{#if review.status === 'checking'}
-		<b>{round === 2 ? '檢查官正在做第二次檢查' : '檢查官正在檢查'}</b>
+		<b>{precheck ? '檢查官正在核對這期的成果是否已在' : round === 2 ? '檢查官正在做第二次檢查' : '檢查官正在檢查'}</b>
 		<p>已檢查 {Math.max(0, Math.floor((now - review.startedAt) / 60_000))} 分鐘，上限 {limitMinutes} 分鐘</p>
 	{:else if review.status === 'pass'}
 		<b>{title}：通過（{passed} 條都過）{#if round === 2}<span class="final">最終結果</span>{/if}</b>
@@ -32,7 +34,7 @@
 		<b class="bad">{title}：沒過{#if round === 2}<span class="final">最終結果</span>{/if}</b>
 		{#if review.reason}<p class="bad">{review.reason}</p>{/if}
 	{:else}
-		<b class="bad">{round === 2 ? '第二次檢查沒有做完' : '檢查沒有做完'}</b>
+		<b class="bad">{precheck ? '重跑前核對沒有做完' : round === 2 ? '第二次檢查沒有做完' : '檢查沒有做完'}</b>
 		{#if review.reason}<p>{review.reason}</p>{/if}
 		{#if round === 2}<p>結果維持第一次的沒過。</p>{/if}
 	{/if}
