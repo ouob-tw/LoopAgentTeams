@@ -111,7 +111,9 @@
 		.people > :global(.person) :global(.project) {
 			font-size: max(0.9rem, var(--min-font, 0px));
 		}
-		.people > :global(.person) :global(.phase) {
+		/* The phone's row keeps only a controller waiting closed for its event task (#765): its
+		   card would otherwise read as merely paused. */
+		.people > :global(.person) :global(.phase:not(.event-wait)) {
 			display: none;
 		}
 	}

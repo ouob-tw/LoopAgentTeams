@@ -64,7 +64,7 @@
 			{/if}
 		</span>
 	</span>
-	<span class="phase">{summaryPlain(phaseText(controller))}</span>
+	<span class="phase" class:event-wait={!!controller.eventWait}>{summaryPlain(phaseText(controller))}</span>
 	{#if controller.duty}
 		<span class="duty">{summaryPlain(controller.duty.text)}</span>
 	{/if}

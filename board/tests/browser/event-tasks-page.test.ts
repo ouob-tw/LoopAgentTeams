@@ -9,7 +9,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, expect, test } from 'bun:test';
 import { CHROME, launchChrome, shot, TEST_MS, type Browser, type Tab } from '../browser.ts';
-import { approved, call, cleanupEventBoard, hcomPlan, inState, MINUTE, setup, T0, touchAt, type Board } from '../event-task-fixture.ts';
+import { approved, call, cleanupEventBoard, eventually, hcomPlan, inState, MINUTE, setup, T0, touchAt, viewOf, type Board } from '../event-task-fixture.ts';
 
 let browser: Browser | undefined;
 let tab: Tab;
@@ -120,7 +120,7 @@ test.skipIf(!CHROME)(
 		await frames('event-task-390-details');
 
 		// 立即觸發: handed to a new Agent, recorded as 手動觸發; the button is gone once it no longer waits.
-		hcomPlan(s.board, [s.ctrl, s.luna], ['evt-now']);
+		hcomPlan(s.board, [s.ctrl, s.luna], ['evt-n1', 'evt-n2', 'evt-n3', 'evt-n4']);
 		await tab.pointerClick('.detail [data-action="trigger"]');
 		await tab.until(`!document.querySelector('.detail [data-action="trigger"]') && document.querySelector('.detail .run')?.innerText.includes('使用者手動觸發')`, 'the manual handoff recorded');
 		expect(await text('.detail .run')).toContain('手動觸發');
@@ -134,12 +134,17 @@ test.skipIf(!CHROME)(
 		expect(await actions()).toEqual(['重試接手', '暫停', '刪除']);
 		expect(await text('.detail')).toContain('原因：');
 		await frames('event-task-390-failed');
-		hcomPlan(s.board, [s.ctrl, s.luna], ['evt-retry'], { sleepMs: 1500 });
+		// Spare names: any hcom call made meanwhile (a list, a close) takes a turn of the plan.
+		hcomPlan(s.board, [s.ctrl, s.luna], ['evt-r1', 'evt-r2', 'evt-r3', 'evt-r4', 'evt-r5', 'evt-r6'], { sleepMs: 1500 });
 		await tab.pointerClick('.detail [data-action="retry"]');
 		// Off while the attempt goes, so it cannot be sent twice.
 		await tab.until(`document.querySelector('.detail [data-action="retry"]')?.disabled === true`, '重試接手 off');
 		// A one-shot task is 已完成 once handed over, while its Agent still runs.
-		await inState(s, failing, 'done');
+		const settled = await eventually(async () => {
+			const attempt = (await viewOf(s, failing)).runs.find((run) => run.handoff)?.handoff;
+			return attempt?.attempt === 2 && attempt.status !== 'handing' && attempt;
+		}, 'the retry settled', 15_000);
+		expect([settled.status, settled.reason]).toEqual(['handed', undefined]);
 		await tab.until(`!document.querySelector('.detail [data-action="retry"]')`, '重試接手 gone once handed over');
 	},
 	TEST_MS * 2

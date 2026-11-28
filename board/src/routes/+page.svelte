@@ -480,7 +480,9 @@
 	let tabSetFor: string | null = null;
 	$effect(() => {
 		const shown = taskView;
-		if (!shown || shown.task.id === tabSetFor) return;
+		// Closed: the next task opened, the same one again too, shows beside its own tab.
+		if (!shown) return void (tabSetFor = null);
+		if (shown.task.id === tabSetFor) return;
 		tabSetFor = shown.task.id;
 		const own = isEventView(shown) ? 'events' : 'automation';
 		untrack(() => {

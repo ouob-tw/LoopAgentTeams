@@ -333,7 +333,8 @@
 									{@render field('指令', task.command.command, true)}
 									{@render field('資料夾', task.command.folder, true)}
 								{/if}
-								{#if !task.review.enabled}
+								<!-- An event task never has a checking agent (#758): nothing to say about one. -->
+								{#if !task.review.enabled && task.trigger !== 'event'}
 									{@render field('跑完後檢查', '關')}
 								{/if}
 								<dt class="proposer-label">提案者</dt>

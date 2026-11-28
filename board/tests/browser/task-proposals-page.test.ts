@@ -280,6 +280,7 @@ for (const size of SIZES) {
 		const eventCard = (await tab.eval(`${card(event.id)}.innerText`)) as string;
 		for (const text of ['Agent 任務（事件觸發）', '觸發條件', 'Log 檔出現文字', log, 'DONE', '期限', '核准後 24 小時', '次數', '一次性', '接手方式', '開新 Agent']) expect(eventCard).toContain(text);
 		expect(eventCard).not.toContain('排程');
+		expect(eventCard).not.toContain('跑完後檢查');
 
 		// A task that cannot be made (its folder went): 核准失敗 with the reason beside its mark.
 		rmSync(started.agents[1].folder, { recursive: true });
