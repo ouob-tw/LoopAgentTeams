@@ -427,6 +427,7 @@ test('a damaged saved approval ends 核准失敗 with no task; a task that canno
 	expect((await reject(board, cookie, locked)).status).toBe(200);
 	chmodSync(resultPath(board, locked), 0o000);
 	await card(board, cookie, locked);
+	expect((await (await call(board, 'GET', '/api/task-proposals', { cookie })).json()).proposals.map((proposal: { id: string }) => proposal.id)).not.toContain(locked);
 	chmodSync(resultPath(board, locked), 0o600);
 	expect(resultOf(board, locked).status).toBe('rejected');
 

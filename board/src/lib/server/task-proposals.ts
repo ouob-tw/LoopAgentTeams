@@ -371,7 +371,8 @@ export function createProposalStore(options: {
 			sweep();
 			const list: PendingProposal[] = [];
 			for (const id of ids()) {
-				if (readResult(id)) continue;
+				// One with any result file, even one unreadable just now, is not waiting.
+				if (resultState(id).kind !== 'none') continue;
 				const proposal = readProposal(id);
 				const shown = proposal && shownOf(id, proposal);
 				if (shown?.task) list.push({ ...shown, task: shown.task });
