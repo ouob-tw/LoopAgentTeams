@@ -223,7 +223,9 @@
 		if (open && !aside?.contains(event.target as Node) && !(event.target as Element).closest?.('.bar')) open = false;
 	}
 
-	// The bar: the mouse over it opens the list; a tap on it toggles the list.
+	// The bar: the mouse over it opens the list; a tap on it toggles the list. The tap's touchend is cancelled
+	// (on the bar, in the markup): opening shrinks a finger's 22px bar to its 12px handle and the list takes the
+	// strip freed, so the click the browser sends after the tap would land on a row there and pick it (#747).
 	let press: { x: number; y: number; wasOpen: boolean } | null = null;
 	function enter(event: PointerEvent) {
 		// A button held is a drag, of the scrollbar for one: it never brings the list up.
@@ -315,6 +317,7 @@
 	onpointerdown={down}
 	onpointerup={up}
 	onpointercancel={up}
+	ontouchend={(event) => event.preventDefault()}
 	onmousedown={(event) => event.preventDefault()}
 	oncontextmenu={(event) => event.preventDefault()}
 ></div>
