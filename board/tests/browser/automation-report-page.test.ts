@@ -68,7 +68,11 @@ const has = (selector: string) => tab.eval<boolean>(`!!document.querySelector(${
 const pressed = (selector: string) => tab.eval<string | null>(`document.querySelector(${JSON.stringify(selector)})?.getAttribute('aria-pressed') ?? null`);
 
 /** 詳細資料 on the task page: the settings start folded (#756). */
-const openDetails = () => click('.detail .task header button.more');
+const openDetails = async () => {
+	await click('.detail .task header button.more');
+	// Layout is measured once the arrow has stopped turning.
+	await tab.until(`document.querySelector('.detail .task .chevron').getAnimations().length === 0`, 'the arrow to stop');
+};
 
 for (const width of [1400, 390]) {
 	test.skipIf(!CHROME)(`${width}px: the editor offers 口頭 / DEMO 網頁, an old task opens as 口頭, DEMO 網頁 saves and shows on the task's page; a command task has no choice`, async () => {

@@ -110,7 +110,11 @@ async function expectRowKept(width: number) {
 }
 
 /** 詳細資料 on the task page: the settings start folded (#756). */
-const openDetails = () => click('.detail .task header button.more');
+const openDetails = async () => {
+	await click('.detail .task header button.more');
+	// Layout is measured once the arrow has stopped turning.
+	await tab.until(`document.querySelector('.detail .task .chevron').getAnimations().length === 0`, 'the arrow to stop');
+};
 
 for (const width of [1280, 390]) {
 	test.skipIf(!CHROME)(`${width}px: an old every-day task opens with N = 1; N = 2 adds the start date; wrong values are answered under the row; saved it reads 每 2 天 07:00`, async () => {

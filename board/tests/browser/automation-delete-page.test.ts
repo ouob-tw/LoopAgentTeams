@@ -86,6 +86,8 @@ const danger = () => tab.eval<string>(`getComputedStyle(document.querySelector('
 const openDetails = async () => {
 	await tab.until(`!!document.querySelector('.detail .task header button.more')`, 'the task page');
 	await tab.eval(`document.querySelector('.detail .task header button.more').click()`);
+	// Layout is measured once the arrow has stopped turning.
+	await tab.until(`document.querySelector('.detail .task .chevron').getAnimations().length === 0`, 'the arrow to stop');
 };
 
 for (const width of [1280, 390]) {
@@ -129,6 +131,26 @@ for (const width of [1280, 390]) {
 		await tab.eval(`${button('取消')}.click()`);
 		await tab.until(`!document.querySelector('.detail .task [data-delete] .confirm')`, 'the confirmation to close');
 		expect((await snapshot()).tasks.some((view) => view.task.id === task.id)).toBe(true);
+
+		// Folding 詳細資料, or opening another task, drops the question: it is not waiting when reopened.
+		await tab.eval(`${button('刪除任務')}.click()`);
+		await tab.until(`!!document.querySelector('.detail .task [data-delete] .confirm')`, 'the confirmation before folding');
+		await openDetails();
+		await openDetails();
+		await tab.until(`!!document.querySelector('.detail .task [data-delete]')`, 'the settings reopened');
+		expect(await tab.eval<boolean>(`!!document.querySelector('.detail .task [data-delete] .confirm')`)).toBe(false);
+		if (width > 760) {
+			await tab.eval(`${button('刪除任務')}.click()`);
+			await tab.until(`!!document.querySelector('.detail .task [data-delete] .confirm')`, 'the confirmation before leaving');
+			await tab.eval(`[...document.querySelectorAll('.automation [data-task]')].find((card) => card.dataset.task !== '${task.id}').click()`);
+			await tab.until(`document.querySelector('.detail .task')?.dataset.task !== '${task.id}'`, 'another task');
+			await openDetails();
+			await tab.until(`!!document.querySelector('.detail .task [data-delete]')`, 'its settings');
+			expect(await tab.eval<boolean>(`!!document.querySelector('.detail .task [data-delete] .confirm')`)).toBe(false);
+			await tab.eval(`document.querySelector('.automation [data-task="${task.id}"]').click()`);
+			await tab.until(`document.querySelector('.detail .task')?.dataset.task === '${task.id}'`, 'the first task again');
+			await openDetails();
+		}
 
 		await tab.eval(`${button('刪除任務')}.click()`);
 		await tab.until(`!!document.querySelector('.detail .task [data-delete] .confirm')`, 'the confirmation again');

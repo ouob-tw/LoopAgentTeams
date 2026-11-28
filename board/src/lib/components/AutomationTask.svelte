@@ -2,10 +2,10 @@
 	// One task in the content column: its settings, the checklist and 刪除任務 folded behind
 	// 詳細資料 (closed each time a task is opened), then every run kept, newest first, each with how
 	// it was started, when, how it ended and why, the fixed checks one by one and the output it left.
-	// 立即執行 (停止這次 while it runs), 暫停／恢復 and 編輯 sit at the top;
-	// missed periods above them, with 立即執行 and 這期就算了. An agent run links to its agent's page:
-	// the live screen while it runs, the conversation after. 刪除任務 sits under the settings: it asks
-	// first, and is off while a run is unfinished.
+	// 立即執行 (停止這次 while it runs), 暫停／恢復 and 編輯 sit at the top; missed periods above them,
+	// with 立即執行 and 這期就算了. An agent run links to its agent's page:
+	// the live screen while it runs, the conversation after. 刪除任務 asks first, and is off while a
+	// run is unfinished.
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import {
 		clientName,
@@ -65,8 +65,15 @@
 	const at = $derived(timeFormat(timeZone));
 	const runningRun = $derived(view.runs.find(isOpen));
 	const running = $derived(runningRun !== undefined);
-	/** 刪除任務 was pressed and waits for 確定刪除. */
-	let confirmingDelete = $state(false);
+	/** 刪除任務 was pressed and waits for 確定刪除. Dropped with the fold and with the task. */
+	let confirmingDelete = $derived.by(() => {
+		void taskId;
+		return false;
+	});
+	function toggleDetails() {
+		details = !details;
+		confirmingDelete = false;
+	}
 	let deleting = $state(false);
 	async function remove() {
 		deleting = true;
@@ -123,9 +130,11 @@
 
 <div class="task" data-task={task.id}>
 	<header>
-		<h2>{task.name}</h2>
-		<AutomationState state={view.state} />
-		<button type="button" class="more" aria-expanded={details} onclick={() => (details = !details)}>
+		<div class="title">
+			<h2>{task.name}</h2>
+			<AutomationState state={view.state} />
+		</div>
+		<button type="button" class="more" aria-expanded={details} onclick={toggleDetails}>
 			詳細資料<span class="chevron" class:open={details}><ChevronDown size="1em" /></span>
 		</button>
 	</header>
@@ -330,14 +339,20 @@
 		min-width: 0;
 		max-width: 46rem;
 	}
+	/* 詳細資料 never takes a line of its own: the name wraps beside it. */
 	header {
 		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 0.3rem 0.6rem;
+		align-items: baseline;
+		gap: 0.6rem;
+	}
+	/* The state follows the name's last word, on its line when there is room. */
+	.title {
+		flex: 1;
+		min-width: 0;
 	}
 	h2 {
-		margin: 0;
+		display: inline;
+		margin: 0 0.6rem 0 0;
 		font-size: max(1.15rem, var(--min-font, 0px));
 		overflow-wrap: anywhere;
 	}
@@ -348,11 +363,12 @@
 	/* As 詳細資料 on a controller's header, at this page's 16px floor; the 44px tap area takes
 	   little extra room. */
 	.more {
+		flex: none;
 		display: inline-flex;
 		align-items: center;
 		gap: 0.2rem;
 		min-height: 44px;
-		margin: -0.5rem 0 -0.5rem auto;
+		margin: -0.5rem 0;
 		padding: 0;
 		border: 0;
 		background: none;

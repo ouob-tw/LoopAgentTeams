@@ -99,7 +99,11 @@ const type = (selector: string, value: string) =>
 const text = (selector: string) => tab.eval<string>(`document.querySelector(${JSON.stringify(selector)})?.innerText ?? ''`);
 /** 詳細資料 on the task page: its settings, checklist and 刪除任務 start folded (#756). */
 const MORE = '.detail .task header button.more';
-const openDetails = () => click(MORE);
+const openDetails = async () => {
+	await click(MORE);
+	// Layout is measured once the arrow has stopped turning.
+	await tab.until(`document.querySelector('.detail .task .chevron').getAnimations().length === 0`, 'the arrow to stop');
+};
 const folded = () =>
 	tab.eval(`({ expanded: document.querySelector('${MORE}').getAttribute('aria-expanded'), settings: document.querySelectorAll('.detail .task .kv, .detail .task .checklist, .detail .task [data-delete]').length, next: document.querySelector('.detail .task > .actions').nextElementSibling.innerText })`);
 const CLOSED = { expanded: 'false', settings: 0, next: '執行紀錄' };
@@ -163,6 +167,17 @@ for (const width of [1280, 390]) {
 		expect(await text(MORE)).toBe('詳細資料');
 		expect(await tab.eval<number>(`document.querySelector('${MORE}').getBoundingClientRect().height`)).toBeGreaterThanOrEqual(44);
 		await frame(width, '2a-task-folded');
+		// 詳細資料 stays on the name's first row, to its right, however long the name is.
+		const onRow = () =>
+			tab.eval(`(() => { const line = document.querySelector('.detail .task h2').getClientRects()[0]; const more = document.querySelector('${MORE}').getBoundingClientRect(); const middle = more.top + more.height / 2; return middle > line.top && middle < line.bottom && more.left >= line.right && more.right <= window.innerWidth; })()`);
+		expect(await onRow()).toBe(true);
+		const named = (name: string) => tab.eval(`document.querySelector('.detail .task h2').textContent = ${JSON.stringify(name)}`);
+		for (const name of ['客發展覽平台每月維護報告與資安檢測', '客發展覽平台每月維護報告與資安檢測（正式環境，含備份還原演練與寄信確認）', 'a8a4af17dcmwnspsw0f44ccb9c68'.repeat(3)]) {
+			await named(name);
+			expect([name, await onRow()]).toEqual([name, true]);
+			expect(await fits()).toBe(true);
+		}
+		await named('每月備份資料庫');
 		await openDetails();
 		expect(await tab.eval(`document.querySelector('${MORE}').getAttribute('aria-expanded')`)).toBe('true');
 		const page = await text('.detail .task');
