@@ -284,5 +284,9 @@
 		li {
 			padding: 0.25rem 0.5rem;
 		}
+		/* Inside the row's smaller padding. */
+		.delete {
+			margin-block: -0.25rem 0;
+		}
 	}
 </style>

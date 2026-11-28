@@ -448,10 +448,10 @@
 			margin-top: 0.15rem;
 		}
 		.panels :global(:is(button, input:not([type='checkbox'], [type='radio']))) {
-			min-width: 44px;
-			min-height: 44px;
+			min-width: max(44px, 2.75rem);
+			min-height: max(44px, 2.75rem);
 		}
-		/* The 允許 button shares its group's class and so is a flex box: centre both labels. */
+		/* The 允許 button shares its group's class and so is a flex box: keep both labels at mid-height. */
 		.panels :global(.allow > button) {
 			display: flex;
 			align-items: center;
