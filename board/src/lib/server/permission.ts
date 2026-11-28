@@ -92,6 +92,14 @@ export function codexKeepArgs(permission: Usage['permission'], stored: readonly 
 	return [...codexPermissionArgs(mode), ...addHcomDir(stored, hcomDir)];
 }
 
+/** What a resume adds so a Claude session comes back in bypass permissions (`bypassArgs`), read
+ *  from what hcom holds now; when that refuses, which the switch checked before the stop, what keeps
+ *  its mode instead, so the conversation still comes back. */
+export async function bypassResumeArgs(config: BoardConfig, sessionId: string): Promise<string[]> {
+	const added = bypassArgs((await storedLaunchArgs(config, sessionId)) ?? []);
+	return 'refuse' in added ? keepPermission(config, 'claude', sessionId) : added;
+}
+
 /** The arguments that keep this session's permission mode on a resume: none but for Claude and Codex.
  *  Stored arguments that cannot be read count as none, which at worst repeats the mode they give. */
 export async function keepPermission(config: BoardConfig, client: string, sessionId: string): Promise<string[]> {

@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import type { AgentAction } from '../../src/lib/board/agent-actions.ts';
 import type { SwitchResponse } from '../../src/lib/board/models.ts';
 import {
-	BYPASS_TURNED_OFF_REASON,
+	BYPASS_RESTART_NOTE,
 	codexFirstTurnText,
 	leftOutReason,
 	notOfferedReason,
@@ -181,32 +181,98 @@ test('a scroll that fails stops the switch, saying why: an old input box in the 
 });
 
 test('a mode the round never shows leaves the agent in its starting mode, and is not offered after', async () => {
-	// Started without bypass permissions allowed: Shift+Tab goes round the four others.
-	setHerdr({ screens: { [pane('s-claude')]: claudeScreens(['auto', 'manual', 'acceptEdits', 'plan']) } });
+	// Started without auto mode: Shift+Tab goes round the others.
+	setHerdr({ screens: { [pane('s-claude')]: claudeScreens(['bypassPermissions', 'manual', 'acceptEdits', 'plan']) } });
 
-	const switched = await post({ session: 's-claude', mode: 'bypassPermissions' });
+	const switched = await post({ session: 's-claude', mode: 'auto' });
 	expect(switched.status).toBe(502);
-	expect(switched.body.reason).toBe(notOfferedReason('bypassPermissions'));
-	expect(switched.body.entry.permission).toMatchObject({ from: 'auto', mode: 'auto', presses: 4, outcome: 'back' });
+	expect(switched.body.reason).toBe(notOfferedReason('auto'));
+	expect(switched.body.entry.permission).toMatchObject({ from: 'bypassPermissions', mode: 'bypassPermissions', presses: 4, outcome: 'back' });
 	expect(keyPresses()).toHaveLength(4);
 
 	const status = await permission('s-claude');
-	expect(status.current).toBe('auto');
+	expect(status.current).toBe('bypassPermissions');
 	expect(status.modes).toEqual([
-		{ id: 'bypassPermissions', label: 'bypass permissions', reason: leftOutReason('bypassPermissions') },
-		{ id: 'auto', label: 'auto mode', reason: null },
+		{ id: 'bypassPermissions', label: 'bypass permissions', reason: null },
+		{ id: 'auto', label: 'auto mode', reason: leftOutReason('auto') },
 		{ id: 'manual', label: 'manual mode', reason: null }
 	]);
 });
 
-test('bypass permissions is not offered, nor pressed for, when the launch settings turn it off', async () => {
+/** The stored arguments of a Claude agent hcom started in auto mode. */
+const AUTO_STORED = ['--permission-mode', 'auto', '--model', 'claude-sonnet-5-5'];
+/** The Claude agent started by hcom with `args`: what the helper reads, and what its stop records. */
+function claudeLaunched(args: string[], listed = true) {
+	writeFileSync(join(fixture.dir, 'launch-args.json'), JSON.stringify({ 's-claude': args }));
+	fixture.setHcom({ agents: [...(listed ? [{ ...hcomAgent('clio', 's-claude'), launch_args: JSON.stringify(args) }] : []), hcomAgent('coxa', 's-codex')] });
+}
+
+test('bypass permissions a whole round never shows restarts the agent at once with it added, the same conversation resumed', async () => {
 	setHerdr({ screens: { [pane('s-claude')]: claudeScreens(['auto', 'manual', 'acceptEdits', 'plan']) } });
-	writeFileSync(join(fixture.dir, 'launch-args.json'), JSON.stringify({ 's-claude': ['--dangerously-skip-permissions', '--settings', '{"permissions":{"disableBypassPermissionsMode":"disable"}}'] }));
-	expect((await permission('s-claude')).modes[0]).toEqual({ id: 'bypassPermissions', label: 'bypass permissions', reason: BYPASS_TURNED_OFF_REASON });
+	lastTurn('s-claude', 'claude-sonnet-5-5');
+	claudeLaunched(AUTO_STORED);
+	await fixture.refresh(cookie);
+
+	expect((await permission('s-claude')).modes[0]).toEqual({ id: 'bypassPermissions', label: 'bypass permissions', reason: null });
+
+	const switched: { status: number; body: SwitchResponse } = await post({ session: 's-claude', mode: 'bypassPermissions' });
+	expect(switched.status).toBe(200);
+	expect(switched.body).toMatchObject({ ok: true, reason: null, entry: { state: 'resuming', open: true, to: { permission: 'bypassPermissions' } } });
+	// The round found it missing; then no confirmation, straight to the restart.
+	expect(keyPresses()).toHaveLength(4);
+	// hcom repeats the stored --permission-mode auto; the bypass flag wins over it.
+	expect(hcomCalls()).toEqual([
+		['kill', 'clio'],
+		['r', 's-claude', '--terminal', 'herdr', '--no-run-here', '--go', '--dangerously-skip-permissions']
+	]);
+	expect(actions()[0]).toMatchObject({ action: 'permission', ok: false, permission: { outcome: 'back' } });
+});
+
+test('bypass permissions a past round left out is restarted for at once, offered with a note that says so', async () => {
+	setHerdr({ screens: { [pane('s-claude')]: claudeScreens(['auto', 'manual', 'acceptEdits', 'plan']) } });
+	lastTurn('s-claude', 'claude-sonnet-5-5');
+	// A round found it missing before, while hcom did not list it, so nothing restarted it.
+	claudeLaunched(AUTO_STORED, false);
+	await fixture.refresh(cookie);
+	expect((await post({ session: 's-claude', mode: 'bypassPermissions' })).body.reason).toBe(notOfferedReason('bypassPermissions'));
+	expect((await permission('s-claude')).modes[0]).toEqual({ id: 'bypassPermissions', label: 'bypass permissions', reason: leftOutReason('bypassPermissions') });
+
+	claudeLaunched(AUTO_STORED);
+	await fixture.refresh(cookie);
+	expect((await permission('s-claude')).modes[0]).toEqual({ id: 'bypassPermissions', label: 'bypass permissions', reason: null, restart: BYPASS_RESTART_NOTE });
+	const presses = keyPresses().length;
+	const switched = await post({ session: 's-claude', mode: 'bypassPermissions' });
+	expect(switched.status).toBe(200);
+	expect(keyPresses()).toHaveLength(presses);
+	expect(hcomCalls().at(-1)).toEqual(['r', 's-claude', '--terminal', 'herdr', '--no-run-here', '--go', '--dangerously-skip-permissions']);
+});
+
+test('bypass permissions the launch settings turn off is not pressed for: the agent restarts with the setting lifted', async () => {
+	setHerdr({ screens: { [pane('s-claude')]: claudeScreens(['auto', 'manual', 'acceptEdits', 'plan']) } });
+	lastTurn('s-claude', 'claude-sonnet-5-5');
+	claudeLaunched(['--dangerously-skip-permissions', '--settings', '{"permissions":{"disableBypassPermissionsMode":"disable"}}']);
+	await fixture.refresh(cookie);
+	expect((await permission('s-claude')).modes[0]).toEqual({ id: 'bypassPermissions', label: 'bypass permissions', reason: null, restart: BYPASS_RESTART_NOTE });
+	const switched = await post({ session: 's-claude', mode: 'bypassPermissions' });
+	expect(switched.status).toBe(200);
+	expect(keyPresses()).toEqual([]);
+	// The stored flag is repeated by hcom; the later settings drop the key that turned it off.
+	expect(hcomCalls()).toEqual([
+		['kill', 'clio'],
+		['r', 's-claude', '--terminal', 'herdr', '--no-run-here', '--go', '--settings', '{"permissions":{}}']
+	]);
+});
+
+test('bypass permissions turned off and not restartable is still refused, no key pressed', async () => {
+	setHerdr({ screens: { [pane('s-claude')]: claudeScreens(['auto', 'manual', 'acceptEdits', 'plan']) } });
+	lastTurn('s-claude', 'claude-sonnet-5-5');
+	claudeLaunched(['--restricted', '--settings', '{"permissions":{"disableBypassPermissionsMode":"disable"}}']);
+	await fixture.refresh(cookie);
 	const refused = await post({ session: 's-claude', mode: 'bypassPermissions' });
 	expect(refused.status).toBe(409);
-	expect(refused.body.reason).toBe(BYPASS_TURNED_OFF_REASON);
+	expect(refused.body.reason).toContain('--restricted');
 	expect(keyPresses()).toEqual([]);
+	expect(hcomCalls()).toEqual([]);
 });
 
 test('no key is pressed while the screen shows a dialog, or Herdr says the agent waits on one', async () => {

@@ -1,6 +1,9 @@
 // Switching the permission mode of an agent of the Herdr 分頁 (see `../board/permissions.ts`).
 // Claude: its pane scrolled to the bottom, then Shift+Tab pressed there through Herdr, its screen
-// read after each press, never restarted; logged as an agent action, queued like a send. Codex: a
+// read after each press; logged as an agent action, queued like a send. Bypass permissions that a
+// session cannot reach (turned off at its start, or a whole round went by without it) is had by a
+// restart instead, at once (the user chose that): a model switch that resumes the conversation with
+// what turns it on, or for a session without hcom hooks the board's restart (`relink.ts`). Codex: a
 // model switch that carries the mode (`agent-switch.ts`), which resumes the same conversation in a
 // fresh launch.
 import type { PermissionSwitch } from '../board/agent-actions.ts';
@@ -16,13 +19,16 @@ import {
 	leftOutReason,
 	notOfferedReason,
 	readClaudeScreen,
+	BYPASS_RESTART_NOTE,
 	type ClaudeMode,
 	type ClaudeScreenMode,
 	type CodexMode,
 	type PermissionStatus,
 	type ScreenRead
 } from '../board/permissions.ts';
+import type { Agent, KnownAgent } from '../board/types.ts';
 import { AGENT_GONE_REASON, attempt } from './agent-control.ts';
+import { relinkAgent } from './relink.ts';
 import { switchAgentModel } from './agent-switch.ts';
 import type { Board } from './board.ts';
 import { isOwnPane } from './config.ts';
@@ -90,6 +96,7 @@ export async function agentPermissionStatus(board: Board, agentId: string): Prom
 		const screen = agent.inHerdr ? await screenOf(board, agent.herdr.pane, 'detection') : { mode: null, reason: AGENT_GONE_REASON };
 		const missing = leftOut(board, agentId, screen.mode);
 		const off = agent.hcom === 'linked' && (await bypassOff(board, agentId));
+		const restart = restartable(agent) && (off || missing.has('bypassPermissions'));
 		return {
 			client: 'claude',
 			current: screen.mode,
@@ -98,7 +105,9 @@ export async function agentPermissionStatus(board: Board, agentId: string): Prom
 			modes: CLAUDE_MODES.map((mode) => ({
 				id: mode,
 				label: CLAUDE_MODE_LABEL[mode],
-				reason: off && mode === 'bypassPermissions' ? BYPASS_TURNED_OFF_REASON : missing.has(mode) ? leftOutReason(mode) : null
+				...(mode === 'bypassPermissions' && restart
+					? { reason: null, restart: BYPASS_RESTART_NOTE }
+					: { reason: off && mode === 'bypassPermissions' ? BYPASS_TURNED_OFF_REASON : missing.has(mode) ? leftOutReason(mode) : null })
 			}))
 		};
 	}
@@ -114,6 +123,27 @@ export async function agentPermissionStatus(board: Board, agentId: string): Prom
 		};
 	}
 	return { client: null, current: null, reason: `看板不會切換 ${agent.client || '這個 client'} 的權限模式`, blocked: null, modes: [] };
+}
+
+/** Whether a restart can bring this agent back in bypass permissions: one linked to hcom by a model
+ *  switch, one without hcom hooks by the board's restart. */
+const restartable = (agent: Agent) => agent.client === 'claude' && agent.inHerdr && (agent.hcom === 'linked' || agent.noHooks);
+
+/** Restart a Claude agent into bypass permissions (see the top of this file). */
+function restartIntoBypass(board: Board, agent: KnownAgent) {
+	return agent.hcom === 'linked' ? switchAgentModel(board, agent.id, { model: null, effort: null, permission: 'bypassPermissions' }) : relinkAgent(board, agent.id);
+}
+
+/** Pick a Claude mode: Shift+Tab, but bypass permissions that it cannot reach by a restart, when
+ *  that is known before or the presses find it (see the top of this file). */
+export async function pickClaudePermission(board: Board, agentId: string, target: ClaudeMode) {
+	if (target !== 'bypassPermissions') return switchClaudePermission(board, agentId, target);
+	const agent = (await board.current()).agents.find((candidate) => candidate.id === agentId);
+	const known = agent?.id && restartable(agent) ? { ...agent, id: agent.id } : null;
+	if (known && ((known.hcom === 'linked' && (await bypassOff(board, agentId))) || leftOut(board, agentId, null).has(target))) return restartIntoBypass(board, known);
+	const pressed = await switchClaudePermission(board, agentId, target);
+	if (known && !pressed.body.ok && pressed.body.reason === notOfferedReason(target)) return restartIntoBypass(board, known);
+	return pressed;
 }
 
 /** Switch a Claude agent's mode with Shift+Tab (see the top of this file). */

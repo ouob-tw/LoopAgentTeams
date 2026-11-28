@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { AGENT_HCOM_UNKNOWN_REASON } from '../../src/lib/board/agent-actions.ts';
 import { AGENT_FIXED_MODEL_REASON, AGENT_HCOM_UNKNOWN_SWITCH_REASON, AGENT_NOT_LINKED_SWITCH_REASON, LOCK_UNKNOWN_TEXT } from '../../src/lib/board/models.ts';
-import { PERMISSION_NOT_LINKED_REASON } from '../../src/lib/board/permissions.ts';
+import { BYPASS_RESTART_NOTE, PERMISSION_NOT_LINKED_REASON } from '../../src/lib/board/permissions.ts';
 import { moveFakeWorkspace, NODE, sleep, startFixture, type Fixture } from '../harness.ts';
 
 
@@ -1747,6 +1747,47 @@ test.skipIf(!CHROME)('a Claude agent\'s options pop-up shows the mode its screen
 		await sleep(200);
 		expect(await tab.eval(`!!document.querySelector('.dock .popup')`)).toBe(false);
 	} finally {
+		setHerdr(AGENTS);
+		await fixture.refresh(cookie);
+	}
+}, TEST_MS);
+
+test.skipIf(!CHROME)('a Claude agent whose launch turned bypass permissions off offers it with a note, and a click restarts it at once with it added', async () => {
+	rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
+	rmSync(join(fixture.dir, 'hcom-calls.jsonl'), { force: true });
+	const rule = '─'.repeat(40);
+	const lines = ['⏵⏵ auto mode on (shift+tab to cycle)', '⏸ manual mode on', '⏵⏵ accept edits on', '⏸ plan mode on'];
+	setHerdr(AGENTS, { screens: { 'wB:p-s-long': lines.map((line) => ['Claude Code', rule, '❯ ', rule, `  ${line}`].join('\n')) } });
+	const launched = ['--dangerously-skip-permissions', '--settings', '{"permissions":{"disableBypassPermissionsMode":"disable"}}'];
+	writeFileSync(join(fixture.dir, 'launch-args.json'), JSON.stringify({ 's-long': launched }));
+	fixture.setHcom({
+		agents: [
+			{ name: 'lead', session_id: 's-lead', status: 'active' },
+			{ name: 'lonq', session_id: 's-long', status: 'listening', launch_context: { pane_id: 'wB:p-s-long' }, launch_args: JSON.stringify(launched) }
+		]
+	});
+	try {
+		await fixture.refresh(cookie);
+		await visit(1280, '?agent=s-long');
+		await tab.until(`!!document.querySelector('.dock .pill-slot .picker')`, 'the model picker');
+		await click(OPTIONS);
+		await tab.until(`${CURRENT} === 'auto mode'`, 'the mode read off its screen');
+		const bypass = `${MODES} button[data-mode="bypassPermissions"]`;
+		await tab.until(`document.querySelector('${bypass}')?.innerText.includes('會重開')`, 'the restart mark on bypass permissions');
+		expect(await tab.eval(`document.querySelector('${bypass}').getAttribute('aria-disabled')`)).toBe('false');
+		expect(await tab.eval(`document.querySelector('${MODES}').innerText.includes(${JSON.stringify(BYPASS_RESTART_NOTE)})`)).toBe(true);
+		await shot(tab, '1280-permission-bypass-restart');
+		await click(bypass);
+		// No confirmation: the restart goes at once.
+		await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('已重新啟動 ')`, 'the restart notice', 15_000);
+		expect(hcomCalls()).toEqual([
+			['kill', 'lonq'],
+			['r', 's-long', '--terminal', 'herdr', '--no-run-here', '--go', '--settings', '{"permissions":{}}']
+		]);
+		expect(herdrCalls()).toEqual([]);
+	} finally {
+		rmSync(join(fixture.dir, 'launch-args.json'), { force: true });
+		fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }] });
 		setHerdr(AGENTS);
 		await fixture.refresh(cookie);
 	}

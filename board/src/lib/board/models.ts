@@ -3,7 +3,7 @@
 // server and the page.
 import type { SentEntry } from './answers.ts';
 import type { LaunchClient } from './launch.ts';
-import { CODEX_MODE_LABEL, codexPermissionArgs, isCodexMode, type CodexMode } from './permissions.ts';
+import { CLAUDE_MODE_LABEL, CODEX_MODE_LABEL, codexPermissionArgs, isCodexMode, type CodexMode } from './permissions.ts';
 
 export interface ClientOptions {
 	models: string[];
@@ -31,8 +31,12 @@ export const DEFAULT_MODEL_OPTIONS: ModelOptions = {
 export interface ModelChoice {
 	model: string | null;
 	effort: string | null;
-	permission?: CodexMode | null;
+	/** A Codex mode, or Claude's bypass permissions: a restart that adds what turns it on, for a
+	 *  session started without it (`permission-switch.ts`). */
+	permission?: CodexMode | ClaudeBypass | null;
 }
+
+export type ClaudeBypass = 'bypassPermissions';
 
 export const NO_CHOICE: ModelChoice = { model: null, effort: null };
 
@@ -41,7 +45,7 @@ export const chose = (choice: ModelChoice | undefined | null): choice is ModelCh
 
 /** Whether the choice holds only values the lists offer this client; a permission mode only Codex's three. */
 export function offered(options: ClientOptions, choice: ModelChoice, client?: string): boolean {
-	if (choice.permission && (client !== 'codex' || !isCodexMode(choice.permission))) return false;
+	if (choice.permission && !(client === 'codex' ? isCodexMode(choice.permission) : client === 'claude' && choice.permission === 'bypassPermissions')) return false;
 	return (choice.model === null || options.models.includes(choice.model)) && (choice.effort === null || options.efforts.includes(choice.effort));
 }
 
@@ -58,7 +62,7 @@ export function modelArgs(client: LaunchClient, choice: ModelChoice): string[] {
 	} else {
 		if (choice.model !== null) args.push('-c', `model=${JSON.stringify(choice.model)}`);
 		if (choice.effort !== null) args.push('-c', `model_reasoning_effort=${JSON.stringify(choice.effort)}`);
-		if (choice.permission) args.push(...codexPermissionArgs(choice.permission));
+		if (choice.permission && isCodexMode(choice.permission)) args.push(...codexPermissionArgs(choice.permission));
 	}
 	return args;
 }
@@ -308,7 +312,7 @@ export const settingsText = (settings: Partial<ModelChoice> | null | undefined) 
 /** A choice as a switch shows it: what it changes, and that the rest is kept. */
 export const choiceText = (choice: ModelChoice) =>
 	choice.permission
-		? `權限 ${CODEX_MODE_LABEL[choice.permission]}`
+		? `權限 ${isCodexMode(choice.permission) ? CODEX_MODE_LABEL[choice.permission] : CLAUDE_MODE_LABEL[choice.permission]}`
 		: `模型 ${choice.model ?? '保持目前'}・思考強度 ${choice.effort ?? '保持目前'}`;
 
 /** Settings sent: what was chosen, and the effort carried with a new model, not chosen (none

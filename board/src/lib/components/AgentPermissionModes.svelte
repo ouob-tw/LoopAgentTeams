@@ -2,7 +2,8 @@
 	// The open agent's permission mode, for a Claude or Codex agent: a section of the command line's
 	// options pop-up listing the three modes the board switches between, the current one marked; a
 	// click on another switches at once. Claude's mode is what its screen shows (read again whenever
-	// the agent's state changes), and a switch presses Shift+Tab there; Codex's is its latest turn's,
+	// the agent's state changes), and a switch presses Shift+Tab there, or restarts it into bypass
+	// permissions when it cannot reach that (its note says so); Codex's is its latest turn's,
 	// and a switch resumes it, as a model switch does (its ⚠ beside the model handles one left unfinished).
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { AGENT_BUSY_REASON, AGENT_SWITCH_UNFINISHED_TEXT } from '#lib/board/models.ts';
@@ -55,11 +56,16 @@
 		return null;
 	});
 
-	async function pick(mode: string) {
+	async function pick(mode: string, restart: boolean) {
 		if (blocked || mode === status?.current) return;
 		const { id: target, name } = agent;
 		const result = await agentControl.switchPermission(target, mode);
-		const done = client === 'codex' ? `已切換 ${name} 的權限，等它接回並跑完確認的一回合。` : `已把 ${name} 切換為 ${label(mode)}。`;
+		const done =
+			client === 'codex'
+				? `已切換 ${name} 的權限，等它接回並跑完確認的一回合。`
+				: restart
+					? `已重新啟動 ${name} 並加上 ${label(mode)}，等它接回。`
+					: `已把 ${name} 切換為 ${label(mode)}。`;
 		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? `${done}${result.reason ?? ''}` : (result.reason ?? '切換失敗'));
 	}
 </script>
@@ -74,16 +80,16 @@
 					data-mode={mode.id}
 					aria-current={status?.current === mode.id}
 					aria-disabled={!!blocked || !!mode.reason}
-					title={mode.reason ?? mode.label}
-					onclick={() => !mode.reason && pick(mode.id)}
+					title={mode.reason ?? mode.restart ?? mode.label}
+					onclick={() => !mode.reason && pick(mode.id, !!mode.restart)}
 				>
-					{mode.label}{#if mode.reason}<small>不能選</small>{/if}
+					{mode.label}{#if mode.reason}<small>不能選</small>{:else if mode.restart}<small>會重開</small>{/if}
 				</button>
 			{/each}
 		</div>
 		{#if blocked}<p class="note blocked">{blocked}</p>{/if}
-		{#each status?.modes.filter((mode) => mode.reason) ?? [] as mode (mode.id)}
-			<p class="note">{mode.reason}</p>
+		{#each status?.modes.filter((mode) => mode.reason || mode.restart) ?? [] as mode (mode.id)}
+			<p class="note">{mode.reason ?? mode.restart}</p>
 		{/each}
 	</section>
 {/if}

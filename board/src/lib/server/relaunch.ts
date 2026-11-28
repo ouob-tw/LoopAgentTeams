@@ -9,7 +9,7 @@
 import { carryOwnership } from './devices.ts';
 import { isLaunchClient } from '../board/launch.ts';
 import { modelArgs, type SwitchResponse, type SwitchView } from '../board/models.ts';
-import { codexFirstTurnText } from '../board/permissions.ts';
+import { codexFirstTurnText, isCodexMode } from '../board/permissions.ts';
 import type { Board } from './board.ts';
 import { runningIn, waitToAppear, type Wanted, sessionOf } from './appear.ts';
 import { launchAgent, listAgents } from './hcom.ts';
@@ -102,7 +102,7 @@ export async function relaunchSwitch(board: Board, controller: SwitchTarget, vie
 		client: controller.client,
 		folder: controller.workspace,
 		herdrWorkspace: workspace.id,
-		prompt: relaunch.session && view.to.permission ? codexFirstTurnText(view.to.permission) : '',
+		prompt: relaunch.session && view.to.permission && isCodexMode(view.to.permission) ? codexFirstTurnText(view.to.permission) : '',
 		// Later arguments win over the ones hcom kept, the way a resume's do.
 		extraArgs: [...relaunch.args, ...modelArgs(controller.client, view.to)],
 		intoPane: held?.pane,

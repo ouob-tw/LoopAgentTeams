@@ -43,7 +43,7 @@ import { appendSent, readLines, type ResumeMark, type ResumeResult, type SentLog
 import { runsWithoutHooks } from './model.ts';
 import { clientGone } from './process-hooks.ts';
 import { openResume, openResumes, openSwitch, unplacedResumes } from './sent-views.ts';
-import { keepPermission } from './permission.ts';
+import { bypassResumeArgs, keepPermission } from './permission.ts';
 
 /** Where a model switch has stopped its client without seeing it gone. */
 const UNSETTLED_STOP = new Set<SwitchState>(['stopping', 'stop-failed', 'stop-unknown']);
@@ -247,7 +247,12 @@ export async function resume(board: Board, controller: Pick<Controller, 'workspa
 		entry.error = workspace.reason;
 		return { abandon: null, logged: false, logError: null };
 	}
-	entry.extraArgs = [...(await keepPermission(board.config, controller.client, entry.controllerId)), ...entry.extraArgs];
+	// A switch to Claude's bypass permissions adds what turns it on instead of keeping the mode.
+	const bypass = controller.client === 'claude' && entry.choice?.permission === 'bypassPermissions';
+	entry.extraArgs = [
+		...(bypass ? await bypassResumeArgs(board.config, entry.controllerId) : await keepPermission(board.config, controller.client, entry.controllerId)),
+		...entry.extraArgs
+	];
 	const before = await listHerdrAgents(board.config);
 	const earlier = before.ok ? before.agents.filter((agent) => agent.sessionId === entry.controllerId).map((agent) => agent.pane) : [];
 	if (earlier.length) entry.earlierPanes = earlier;

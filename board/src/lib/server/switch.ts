@@ -47,7 +47,8 @@ import { WAKE_UNKNOWN_REASON, type SentWake } from '../board/wake.ts';
 import type { Board } from './board.ts';
 import { isOwnPane } from './config.ts';
 import { modelLock, readCurrent, readLaunchArgs, readTranscript } from './helper.ts';
-import { hasHoldTerminal, killAgent, listAgents, type HcomAgent } from './hcom.ts';
+import { hasHoldTerminal, killAgent, listAgents, storedLaunchArgs, type HcomAgent } from './hcom.ts';
+import { bypassArgs } from './permission.ts';
 import { closePane, listHerdrAgents, paneExists, paneTab, splitPane } from './herdr.ts';
 import { switchPlace } from './agents.ts';
 import { queued } from './send.ts';
@@ -181,7 +182,24 @@ export async function startSwitch(board: Board, controller: SwitchTarget, entry:
 		return refused(fixedModelReason(controller));
 	}
 	const record = await readTranscript(board.config, controller.client, controller.id);
-	if (entry.to.permission) return permissionSwitch(board, controller, entry, agent, record);
+	if (entry.to.permission && controller.client === 'codex') return permissionSwitch(board, controller, entry, agent, record);
+	if (entry.to.permission) {
+		// Claude's bypass permissions: resumed like a model switch, with what turns it on (`resume`).
+		if (!record.ok) {
+			return refused(
+				record.missing ? `${noun(controller)}還沒有對話紀錄，沒有可接回的對話，沒有重新啟動；等它做完一回合再選。` : `讀不到${noun(controller)}的對話紀錄，沒有重新啟動：${record.reason}`
+			);
+		}
+		// What hcom could repeat: its last stop's arguments and the running client's own, which the
+		// stop records; read again for the resume (`bypassResumeArgs`), as `relink.ts` does.
+		const stored = await storedLaunchArgs(board.config, controller.id);
+		const own = await readLaunchArgs(board.config, controller.id);
+		if (stored === null || !own.ok) return refused('讀不到 hcom 記著的啟動參數，不確定重新啟動後會不會是 bypass permissions，沒有重新啟動。');
+		const added = bypassArgs([...stored, ...own.args]);
+		if ('refuse' in added) return refused(added.refuse);
+		entry.from = record.page.current ?? null;
+		return restartSwitch(board, controller, entry, agent);
+	}
 	if (!record.ok && record.missing) {
 		// Read now: hcom forgets the arguments once the client is stopped.
 		const launched = await readLaunchArgs(board.config, controller.id);

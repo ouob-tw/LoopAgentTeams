@@ -146,6 +146,8 @@ const notOfferedHint = (mode: ClaudeMode) =>
 /** Why a whole round went by without the target, as the page shows it. */
 export const notOfferedReason = (target: ClaudeMode) => `按完一整輪都沒有出現 ${CLAUDE_MODE_LABEL[target]}，已停回原本的模式${notOfferedHint(target)}`;
 
+export const BYPASS_RESTART_NOTE = '目前切不到 bypass permissions：選它會直接重新啟動這個 Agent、改用這個模式，同一段對話接回';
+
 export const BYPASS_TURNED_OFF_REASON = '這個 Agent 啟動時的設定關掉了 bypass permissions（disableBypassPermissionsMode），按 Shift+Tab 也切不到';
 
 /** Why a mode the latest whole round left out cannot be picked. */
@@ -219,8 +221,9 @@ export interface PermissionStatus {
 	reason: string | null;
 	/** Why no switch is offered at all, whatever the mode (the board's own pane); null otherwise. */
 	blocked: string | null;
-	/** The three modes, each with why it cannot be picked (null when it can). */
-	modes: { id: string; label: string; reason: string | null }[];
+	/** The three modes, each with why it cannot be picked (null when it can), and for Claude's
+	 *  bypass permissions that a pick restarts the agent to reach it. */
+	modes: { id: string; label: string; reason: string | null; restart?: string }[];
 }
 
 /** Text the Codex relaunch sends as its first turn: hcom and Herdr only tell which session a fresh
