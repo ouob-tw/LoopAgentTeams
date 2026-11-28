@@ -148,6 +148,20 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" alarm --workspace "$w
 
 `status` 的 `wait` 顯示 `condition`、`due_at` 或尚未成立的 `timeout_at`；紀錄包括 `alarm-registered`、`alarm-ring`、`alarm-timeout`、`alarm-undelivered`。
 
+## 事件任務：關掉自己等很久的事
+
+等很短、或你本來就要開著（例如還有 Agent 要向你回報，關掉後收不到），用上面的鬧鐘或 `wait`。要等很久（例如收幾小時的 Log）、這段時間沒有要你做的事，登記事件任務後關掉自己：事件發生或期限到時由看板接手。
+
+1. 用 task-proposal 技能提案（只收主控），欄位與送出方式照該技能。接手方式：
+   - `new-agent`（開新 Agent）：只在本輪已做完、提案前工作總表 `check` 就通過，且事件後的工作交給只照說明檔做的新 Agent 時選。
+   - 其他情況（含工作總表還有未結案項目）：`resume`（接回原主控）。
+2. 提案要使用者核准。結束回合等待前，以 `alarm --file` 加結果檔的絕對路徑聲明等待（預設 `~/.local/state/lat/task-proposals/<提案編號>.result.json`；有設 `LAT_BOARD_PROPOSALS_DIR` 或 `XDG_STATE_HOME` 時，資料夾照 task-proposal 指令檔開頭的說明）；結果以該技能的 `status` 為準。
+3. 核准後收尾：
+   - `resume`：更新進度索引，寫下事件任務編號、在等什麼、接回後的下一步；向使用者說完後，最後執行該技能的 `away <任務編號>`，看板幾秒後關閉你。維持 active，不 deactivate，也不自行關閉：沒經 `away` 就關掉，看板接不回你。指令被拒時照它印的原因處理，保持開著。
+   - `new-agent`：照一般交付結束本輪（deactivate，工作總表 `check` 通過，不用 `--force-unfinished`），再關掉自己；過不了就代表本輪沒做完，撤掉這個選擇，請使用者刪除任務後改提 `resume`。
+
+被接回（或開著時收到看板的事件訊息）：照 [主控恢復程序](recovery.md) 重讀，從進度索引找回任務編號與下一步。訊息寫明原因；「等到期限，事件沒有發生」時先查那件事實際到哪裡再決定。看板接回成功後已移除事件等待紀錄；可重複且未過期限的任務此時已重新開始等，要再關掉自己就再執行一次 `away`；到期接手後任務已結束，還要等就重新提案。
+
 ## 等待期限與連續到期
 
 等待其他執行 Agent 預設 50 分鐘，短於 Claude 一小時的提示快取，多數情況醒來時快取還在；下方的延長（最多到 80 分鐘）或等待者自己忙碌而晚送催促時，仍可能超過一小時；可在 `wait` 加上 `--minutes 1..720` 指定分鐘數。決策等待、附屬 Agent 等自己的主控都沒有期限，指定 `--minutes` 會以非零結束碼拒絕並說明原因，保留原聲明。附屬 Agent 的 `--for` 解析後若是負責監控它的主控，聲明不寫 `deadline_at`；不延長、不送到期催促、不累計連續到期或上報，只依原有的新訊息／主控成功傳訊息條件解除。`--for` 的 Agent 名稱依清單解析成完整名稱；解析後是自己時拒絕，保留原聲明，提示改用 `alarm`。
