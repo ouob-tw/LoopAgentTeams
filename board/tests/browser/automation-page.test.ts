@@ -226,6 +226,8 @@ for (const width of [1280, 390]) {
 
 		// An agent task: its fields and checklist, and 立即執行 open to it like any task.
 		await tab.send('Page.navigate', { url: `${fixture.url}/?automation=${ids.agent}` });
+		// 詳細資料 only answers once the reloaded page has started.
+		await tab.boardStarted();
 		await tab.until(`document.querySelector('.detail .task')?.dataset.task === '${ids.agent}'`, 'the agent task');
 		await openDetails();
 		const agentPage = await text('.detail .task');
