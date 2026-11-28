@@ -22,7 +22,7 @@ description: "召喚其他 client 的 Agent 透過 HCOM 協作時使用：叫一
 | 機械性工作 | `claude-sonnet-5-5` | `low` | `medium` → 換 `claude-opus-5-5` `medium` → `high` → `xhigh` → 換 `claude-fable-5-2` `medium` |
 | 資安相關實作 | `claude-opus-5-5` | `high` | `xhigh` → 換 `claude-fable-5-2` `medium` |
 | 後端審查 | `gpt-6.1-sol` | `medium` | `high` → 換 `gpt-6-astra` `medium` |
-| QA | `gpt-6.1-terra` | `medium` | 結束時仍有無法證實的項目（證據不足）或卡住，改召喚 `gpt-6.1-sol` `medium` 的 QA 接手那些項目；再卡住照「後端審查」列升級 |
+| QA | `gpt-6.1-terra`；需要 passkey／虛擬認證器，或要檢查登入工作階段邊界（過期、撤銷、未登入）時，直接用 `gpt-6.1-sol` | `medium` | 結束時仍有無法證實的項目（證據不足）或卡住，改召喚 `gpt-6.1-sol` `medium` 的 QA 接手那些項目；再卡住、或直接用 sol 的 QA 卡住，照「後端審查」列升級 |
 | 分析師（/analyst） | `claude-fable-5-2` | `medium` | `high` → `xhigh`；Fable 不可用才換 `gpt-6-astra` `medium` |
 | 其他或混合 | 依任務內容選上面一列 | | |
 | 使用者或呼叫的技能指定的模型 | 照指定 | 照指定，沒說就 `medium` | 不換模型，沿 `low` → `medium` → `high` → `xhigh` 一次升一級 |
@@ -33,6 +33,7 @@ description: "召喚其他 client 的 Agent 透過 HCOM 協作時使用：叫一
 - 複雜以外：範圍清楚、原因已知。例：加欄位、調整單一 API 的回傳格式、用既有元件做新按鈕、修原因已知的 bug。
 - 複雜：跨檔案或跨模組的功能、原因不明的 bug、設計資料結構或介面、審查、需自行權衡多個方案。
 - 資安相關實作：改動碰到登入／權限、密碼／金鑰、加密、輸入驗證，不看上面三級，一律走這列。
+- QA 直接用 sol：看驗收項目，不看改動主題；任一項符合表中 QA 列的例外條件就算。
 
 `claude-fable-5-2` 除分析師外只當升級終點，其他任務沒有預設用它。
 
