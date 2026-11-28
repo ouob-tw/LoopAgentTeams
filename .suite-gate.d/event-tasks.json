@@ -1,0 +1,24 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/server/event-tasks.ts",
+        "board/src/lib/board/event-tasks.ts",
+        "board/src/lib/server/automation.ts",
+        "board/src/lib/board/automation.ts",
+        "board/src/lib/server/task-proposals.ts",
+        "board/src/lib/server/alerts.ts",
+        "board/src/lib/server/board.ts",
+        "board/src/lib/server/config.ts",
+        "board/tests/task-proposal-fixture.ts",
+        "board/src/routes/api/automation/**",
+        "board/tests/fake-hcom.mjs",
+        "board/tests/harness.ts"
+      ],
+      "tests": [
+        "board/tests/server/event-tasks.test.ts",
+        "board/tests/unit/event-tasks.test.ts"
+      ]
+    }
+  ]
+}

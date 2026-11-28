@@ -42,7 +42,7 @@ import { createPdPoller, readPdPending } from './pd.ts';
 import { loadUsageStyle, saveUsageStyle } from './usage-style.ts';
 import type { UsageStyle } from '../board/usage.ts';
 import { loadTranslateMode, saveTranslateMode } from './translate-mode.ts';
-import { createAutomation, type Automation } from './automation.ts';
+import { createAutomation, EVENT_NOTICE_TEXT, type Automation, type AutomationEvent } from './automation.ts';
 import { createTaskProposals, type TaskProposals } from './task-proposals.ts';
 import { boardAgentHost } from './automation-host.ts';
 import { createAlerts, type Alerts } from './alerts.ts';
@@ -331,11 +331,23 @@ function createBoard(): Board {
 		}
 	}
 
+	/** An event task's push: the task's name and one sentence, never the event's details. */
+	async function pushEventNotice(event: Extract<AutomationEvent, { type: 'event-notice' }>) {
+		const body = EVENT_NOTICE_TEXT[event.notice];
+		try {
+			const devices = await push.send({ title: event.task.name, body, alert: `event-task-${event.task.id}` });
+			log('INFO', 'board.push', 'event_task_pushed', { task_id: event.task.id, notice: event.notice, devices });
+		} catch (error) {
+			log('ERROR', 'board.push', 'push_send_failed', { task_id: event.task.id, notice: event.notice, ...exceptionFields(error) });
+		}
+	}
+
 	const automation = createAutomation({
 		dir: join(config.stateDir, 'automation'),
 		stateDir: config.stateDir,
 		latDir: config.latDir,
 		trustFiles: config.trustFiles,
+		procDir: config.procDir,
 		now: config.now,
 		tickMs: config.automationTickMs,
 		publish: (snapshot) => {
@@ -343,6 +355,8 @@ function createBoard(): Board {
 		},
 		// A run that ended badly, or periods found missed, make a red card and a push.
 		notify: (event) => {
+			// An event task's notice is a push of its own, with no red card (#763).
+			if (event.type === 'event-notice') return void pushEventNotice(event);
 			if (event.type === 'missed')
 				log('WARNING', 'automation', 'automation periods missed', { task_id: event.task.id, periods: event.periods.map((entry) => entry.period), count: event.periods.length });
 			const alert = alerts.record(event);
@@ -371,6 +385,7 @@ function createBoard(): Board {
 		latDir: config.latDir,
 		stateDir: config.stateDir,
 		passkeySite: config.passkeySite,
+		procDir: config.procDir,
 		// An approved proposal becomes a task through the automation's own checks and files.
 		createTask: (approval) => automation.createApproved(approval),
 		taskExists: (taskId) => automation.snapshot().tasks.some((entry) => entry.task.id === taskId),

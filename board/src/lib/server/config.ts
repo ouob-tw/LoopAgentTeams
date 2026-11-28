@@ -56,6 +56,9 @@ export interface BoardConfig {
 	/** The task-proposal folder (`LAT_BOARD_PROPOSALS_DIR`): one proposal file and one result file per
 	 *  任務提案. The agent's command reads the results here too, so it works the folder out the same way. */
 	proposalsDir: string;
+	/** Where an event task's process is looked up (`LAT_BOARD_PROC_DIR`): `/proc` unless a test
+	 *  gives a folder of its own. */
+	procDir: string;
 	/** The local socket agents send proposals and withdrawals to (`LAT_BOARD_PROPOSAL_SOCKET`). */
 	proposalSocket: string;
 	/** What runs the acceptor that listens on it (`LAT_BOARD_PROPOSAL_ACCEPTOR_COMMAND`); the board appends the socket's path. */
@@ -353,6 +356,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		asksDir: env.LAT_BOARD_ASKS_DIR && isAbsolute(env.LAT_BOARD_ASKS_DIR) ? env.LAT_BOARD_ASKS_DIR : join(stateHome(env), 'lat/board-asks'),
 		// Next to them too; `skills/local/task-proposal/scripts/task-proposal.py` works both out the same way.
 		proposalsDir,
+		procDir: env.LAT_BOARD_PROC_DIR && isAbsolute(env.LAT_BOARD_PROC_DIR) ? env.LAT_BOARD_PROC_DIR : '/proc',
 		// Inside the folder, which only the board's account can enter.
 		proposalSocket: env.LAT_BOARD_PROPOSAL_SOCKET && isAbsolute(env.LAT_BOARD_PROPOSAL_SOCKET) ? env.LAT_BOARD_PROPOSAL_SOCKET : join(proposalsDir, 'board.sock'),
 		proposalAcceptorCommand: commandFrom(env, 'LAT_BOARD_PROPOSAL_ACCEPTOR_COMMAND') ?? ['uv', 'run', '--no-project', 'python', acceptorScript()],
