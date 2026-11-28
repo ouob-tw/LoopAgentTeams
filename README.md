@@ -119,6 +119,7 @@ LAT 看板是跑在主機上的網頁服務，電腦與手機用同一個網址�
 | [ui-copy](skills/local/ui-copy/SKILL.md) | 做畫面、寫介面需求與審查介面時決定資訊怎麼呈現：圖形優先、其次收合、最後才寫字，以及何時才加說明句 |
 | [ui-baseline](skills/local/ui-baseline/SKILL.md) | 做畫面時守的底線：動手前讀設計規格、列狀態表，守文字與觸控尺寸，交付前用手機與電腦寬度截圖驗收 |
 | [ui-choice-demo](skills/local/ui-choice-demo/SKILL.md) | 給使用者看成果、DEMO 或請其選擇前，用一個指令發布成能打開的網址，覆蓋同名、14 天自動清掉 |
+| [task-proposal](skills/local/task-proposal/SKILL.md) | Agent 把想新增的自動化任務送到看板，使用者以 passkey 核准後才建立 |
 | [retro](skills/local/retro/SKILL.md) | 回顧一次 session，依嚴重度列出能改善 Agent 工作環境的地方；只在使用者或流程規則要求時使用 |
 
 各階段的具體方法沿用 Matt Pocock 的 [Matt skills](https://github.com/mattpocock/skills)（`grill-with-docs`、`to-spec`、`to-tickets`、`implement`、`code-review` 等），LAT 負責階段銜接與角色協調。
@@ -139,7 +140,7 @@ LAT 看板是跑在主機上的網頁服務，電腦與手機用同一個網址�
 
 ```bash
 bunx skills add ouob-tw/LoopAgentTeams \
-  --skill lat hcom-spawn analyst three-tier-testing host-guard retro to-spec to-tickets implement grill-with-docs wayfinder handoff \
+  --skill lat hcom-spawn analyst three-tier-testing host-guard retro task-proposal to-spec to-tickets implement grill-with-docs wayfinder handoff \
   --skill setup-matt-pocock-skills triage to-questionnaire \
   --global --agent claude-code codex
 ```
