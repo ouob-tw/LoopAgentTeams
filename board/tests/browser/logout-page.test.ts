@@ -110,18 +110,23 @@ for (const size of SIZES) {
 		await tab.eval(`document.querySelector('dialog[open] [aria-label="整體大小"] button:last-child').click()`);
 		await tab.until(`document.querySelector('dialog[open] [aria-label="整體大小"] output').textContent === '100%'`, 'the overall size back at its default');
 
+		await tab.send('Emulation.setDeviceMetricsOverride', { width: size.width, height: 420, deviceScaleFactor: 1, mobile: size.width < 761 });
+		await tab.eval(`(() => { const box = document.querySelector('dialog[open] .panels'); box.scrollTop = box.scrollHeight; })()`);
 		// No answer: the button says so and the device stays logged in.
 		await tab.eval(`window.realFetch = window.fetch; window.fetch = (input, init) => String(input).includes('/api/device') ? Promise.reject(new TypeError('Failed to fetch')) : window.realFetch(input, init)`);
 		await tab.pointerClick('dialog[open] button.logout');
 		await tab.until(`document.querySelector('dialog[open] p.failed')?.textContent.trim() === '沒有登出，請再試一次。'`, 'the failure under the button');
 		expect(await tab.eval(`parseFloat(getComputedStyle(document.querySelector('dialog[open] p.failed')).fontSize)`)).toBeGreaterThanOrEqual(16);
 		expect(await tab.eval(`${BUTTON}.disabled`)).toBe(false);
+		expect(await tab.eval(`(() => { const line = document.querySelector('dialog[open] p.failed').getBoundingClientRect(); const box = document.querySelector('dialog[open] .panels').getBoundingClientRect(); return line.top >= box.top - 0.5 && line.bottom <= box.bottom + 0.5; })()`)).toBe(true);
 		expect((await fixture.cli('devices')).stdout).toContain(label);
 		await shot(tab, `${size.width}-2-failed-light`);
 		await theme('dark');
 		await shot(tab, `${size.width}-2-failed-dark`);
 		await theme('light');
 		await tab.eval(`window.fetch = window.realFetch`);
+
+		await tab.send('Emulation.setDeviceMetricsOverride', { ...size, deviceScaleFactor: 1, mobile: size.width < 761 });
 
 		// Held on its way: the button is busy and cannot be pressed twice.
 		await tab.eval(holdRequests('/api/device'));

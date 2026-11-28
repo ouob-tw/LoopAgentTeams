@@ -245,4 +245,5 @@ test.skipIf(!CHROME)('a test device sees why each category refuses it, and can s
 		expect(seen.inert).toBe(category.id === 'automation');
 		await shot(tab, `390-9-test-device-${category.id}-light`);
 	}
+	expect(tab.errors).toEqual([]);
 });

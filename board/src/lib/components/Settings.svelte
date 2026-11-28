@@ -248,7 +248,8 @@
 									<LogOut size="1em" aria-hidden="true" />{loggingOut ? '登出中…' : '登出'}
 								</button>
 								{#if logoutFailed}
-									<p class="failed" role="alert">沒有登出，請再試一次。</p>
+									<!-- The last thing in a scrolling box, so it brings itself into view. -->
+									<p class="failed" role="alert" {@attach (line) => line.scrollIntoView({ block: 'nearest' })}>沒有登出，請再試一次。</p>
 								{/if}
 							</div>
 						{/if}

@@ -6,6 +6,9 @@
         "board/src/lib/components/PasskeySettings.svelte",
         "board/src/lib/components/DemoShareSettings.svelte",
         "board/src/lib/components/UnattendedSettings.svelte",
+        "board/src/lib/components/PushSettings.svelte",
+        "board/src/lib/components/PreauthSettings.svelte",
+        "board/src/lib/components/TestDenied.svelte",
         "board/tests/browser/settings-tabs-page.test.ts"
       ],
       "tests": ["board/tests/browser/settings-tabs-page.test.ts"]
