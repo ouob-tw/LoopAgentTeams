@@ -138,9 +138,9 @@ for (const width of [390, 1400]) {
 		async () => {
 			await visit(width);
 			const shots = `resource-${width}`;
-			// The tab sits last, after 自動化, and every tab button is in view without scrolling the row.
-			expect(await tab.eval(`[...document.querySelectorAll('.middle-tabs button')].map((button) => button.dataset.middle)`)).toEqual(['inbox', 'agents', 'quota', 'automation', 'resource']);
-			expect(await tab.eval(`(() => { const row = document.querySelector('.middle-tabs'); return row.scrollWidth <= row.clientWidth; })()`)).toBe(true);
+			// The tab sits last, after 事件任務 (#765); picked, it is wholly in view even where the row scrolls.
+			expect(await tab.eval(`[...document.querySelectorAll('.middle-tabs button')].map((button) => button.dataset.middle)`)).toEqual(['inbox', 'agents', 'quota', 'automation', 'events', 'resource']);
+			expect(await tab.eval(`(() => { const row = document.querySelector('.middle-tabs').getBoundingClientRect(); const picked = document.querySelector('[data-middle="resource"]').getBoundingClientRect(); return picked.left >= row.left - 0.5 && picked.right <= row.right + 0.5; })()`)).toBe(true);
 			expect(await tab.eval(`location.search`)).toBe('?tab=resource');
 
 			await tab.until(`[...document.querySelectorAll('.resource .agents li')][0]?.innerText.includes('%') && !document.querySelector('.resource .agents li')?.innerText.includes(' 0%')`, 'CPU counted');

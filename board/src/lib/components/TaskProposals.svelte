@@ -15,7 +15,7 @@
 	import { startAuthentication } from '@simplewebauthn/browser';
 	import { request } from '#lib/board/api.ts';
 	import { clientName, EFFORT_TEXT, grantHours, scheduleText, timeFormat, TIME_ZONE } from '#lib/board/automation.ts';
-	import { eventText } from '#lib/board/event-tasks.ts';
+	import { eventRows, repeatText } from '#lib/board/event-tasks.ts';
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { Explainer } from '#lib/board/explain.svelte.ts';
 	import { passkeyBlocked, passkeyRefusal } from '#lib/board/passkey-here.ts';
@@ -304,9 +304,13 @@
 								<!-- An event task's schedule is a filler nothing runs by (#763): not shown as one. -->
 								{#if task.trigger === 'event' && task.event}
 									{@render field('種類', 'Agent 任務（事件觸發）')}
-									{@render field('觸發條件', eventText(task.event.event, taipei.full))}
+									{@const trigger = eventRows(task.event.event, taipei.full)}
+									<dt>觸發條件</dt>
+									<dd data-trigger>
+										{trigger.kind}{#each trigger.rows as row (row.label)}<br /><span class="note">{row.label}</span> <span class:mono={row.mono}>{row.value}</span>{/each}
+									</dd>
 									{@render field('期限', `核准後 ${durationText(task.event.deadlineMinutes)}`)}
-									{@render field('次數', task.event.repeat ? '可重複' : '一次')}
+									{@render field('次數', repeatText(task.event.repeat))}
 									{@render field('接手方式', task.event.handoff === 'resume' ? '接回原主控' : '開新 Agent')}
 								{:else}
 									{@render field('種類', task.kind === 'agent' ? 'Agent 任務' : '指令任務')}
@@ -315,7 +319,10 @@
 										{@render field('起算日', task.schedule.startDate)}
 									{/if}
 								{/if}
-								{@render field('最久跑多久', `${task.limitMinutes} 分鐘`)}
+								<!-- 接回原主控 runs nothing of its own: no limit to show. -->
+								{#if task.event?.handoff !== 'resume'}
+									{@render field('最久跑多久', `${task.limitMinutes} 分鐘`)}
+								{/if}
 								{#if task.agent}
 									{@render field('資料夾', task.agent.folder, true)}
 									<dt>Agent</dt>
@@ -326,7 +333,8 @@
 									{@render field('指令', task.command.command, true)}
 									{@render field('資料夾', task.command.folder, true)}
 								{/if}
-								{#if !task.review.enabled}
+								<!-- An event task never has a checking agent (#758): nothing to say about one. -->
+								{#if !task.review.enabled && task.trigger !== 'event'}
 									{@render field('跑完後檢查', '關')}
 								{/if}
 								<dt class="proposer-label">提案者</dt>

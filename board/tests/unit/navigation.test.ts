@@ -463,3 +463,11 @@ test("a task's edit form goes back to the task's page, then the list; a saved ta
 	screen.back();
 	expect(history.place).toBeNull();
 });
+
+test('the 事件任務 tab (#765) rides along beside a task, so a reload keeps the event list', () => {
+	expect(searchOf({ kind: 'automation', id: 't1' }, 'events')).toBe('?automation=t1&tab=events');
+	expect(tabIn(new URLSearchParams('?automation=t1&tab=events'))).toBe('events');
+	expect(searchOf(null, 'events')).toBe('?tab=events');
+	// 週期任務 is a task's own tab: not written.
+	expect(searchOf({ kind: 'automation', id: 't1' }, 'automation')).toBe('?automation=t1');
+});

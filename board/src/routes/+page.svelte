@@ -49,6 +49,10 @@
 	import AutomationForm from '#lib/components/AutomationForm.svelte';
 	import AutomationList from '#lib/components/AutomationList.svelte';
 	import AutomationTask from '#lib/components/AutomationTask.svelte';
+	import EventTask from '#lib/components/EventTask.svelte';
+	import EventTaskList from '#lib/components/EventTaskList.svelte';
+	import { isEventView } from '#lib/board/event-task-view.ts';
+	import { EVENT_UNCHANGEABLE, isWaiting } from '#lib/board/event-tasks.ts';
 	import AlertCard from '#lib/components/AlertCard.svelte';
 	import AskAlertCard from '#lib/components/AskAlertCard.svelte';
 	import type { AutomationAlert } from '#lib/board/alerts.ts';
@@ -467,6 +471,24 @@
 	const taskId = $derived(view?.kind === 'automation' || view?.kind === 'automation-edit' ? view.id : null);
 	const taskView = $derived(taskId === null ? undefined : board.automation.tasks.find((candidate) => candidate.task.id === taskId));
 	const openTask = (id: string) => navigation.go({ kind: 'automation', id }, true);
+	/** 週期任務 and 事件任務 (#765): the two tabs the automation tasks are split between. */
+	const periodicAutomation = $derived({ ...board.automation, tasks: board.automation.tasks.filter((candidate) => !isEventView(candidate)) });
+	const eventTasks = $derived(board.automation.tasks.filter(isEventView));
+	const eventsWaiting = $derived(eventTasks.filter((candidate) => isWaiting(candidate.event.state)).length);
+	/** A task opened from the address, a push or the approval window shows beside its own tab, once
+	 *  per task: a tab picked by hand while it is open stays. */
+	let tabSetFor: string | null = null;
+	$effect(() => {
+		const shown = taskView;
+		// Closed: the next task opened, the same one again too, shows beside its own tab.
+		if (!shown) return void (tabSetFor = null);
+		if (shown.task.id === tabSetFor) return;
+		tabSetFor = shown.task.id;
+		const own = isEventView(shown) ? 'events' : 'automation';
+		untrack(() => {
+			if ((middle === 'automation' || middle === 'events') && middle !== own) navigation.setMiddle(own);
+		});
+	});
 	/** A saved task's page shows it as the board has it now, whatever the stream has brought so far. */
 	async function taskSaved(id: string) {
 		await board.reloadAutomation();
@@ -501,7 +523,8 @@
 		{ id: 'inbox', label: '待辦' },
 		{ id: 'agents', label: 'Herdr' },
 		{ id: 'quota', label: '額度' },
-		{ id: 'automation', label: '自動化' },
+		{ id: 'automation', label: '週期任務' },
+		{ id: 'events', label: '事件任務' },
 		{ id: 'resource', label: '資源' }
 	] as const;
 	const currentTab = $derived(middleTabs.find((tab) => tab.id === middle) ?? middleTabs[0]);
@@ -537,6 +560,30 @@
 	$effect(() => {
 		if (!tabsCollapsed) switchOpen = false;
 	});
+	/** On a narrow column the row scrolls sideways: the selected tab is moved fully into view, the
+	 *  row no further than that (#765). */
+	function showSelectedTab() {
+		if (!tabRow || tabsCollapsed) return;
+		const selected = tabRow.querySelector<HTMLElement>('[aria-pressed="true"]');
+		if (!selected) return;
+		const row = tabRow.getBoundingClientRect();
+		const box = selected.getBoundingClientRect();
+		if (box.right > row.right) tabRow.scrollLeft += Math.ceil(box.right - row.right);
+		else if (box.left < row.left) tabRow.scrollLeft -= Math.ceil(row.left - box.left);
+	}
+	$effect(() => {
+		void middle;
+		void tabsCollapsed;
+		void eventsWaiting;
+		untrack(() => tick().then(showSelectedTab));
+	});
+	onMount(() => {
+		if (!tabRow) return;
+		const observer = new ResizeObserver(showSelectedTab);
+		observer.observe(tabRow);
+		void document.fonts?.ready.then(showSelectedTab);
+		return () => observer.disconnect();
+	});
 	function pickTab(id: (typeof middleTabs)[number]['id']) {
 		navigation.setMiddle(id);
 		if (id === 'inbox') voice.tap();
@@ -566,6 +613,11 @@
 {#snippet names(owner: { project: string; hcomName: string })}
 	<strong>{owner.project}</strong>
 	<span class="handle" title="@{owner.hcomName}">@{lastSegment(owner.hcomName)}</span>
+{/snippet}
+
+<!-- A tab's number: Herdr's agents, and the event tasks waiting for their event (none: no mark). -->
+{#snippet tabCount(id: (typeof middleTabs)[number]['id'])}
+	{#if id === 'agents'}<small>{agents.length}</small>{:else if id === 'events' && eventsWaiting}<small class="waiting">{eventsWaiting}<span class="sr-only"> 個等待中</span></small>{/if}
 {/snippet}
 
 {#snippet refresh()}
@@ -696,7 +748,7 @@
 				<div class="middle-tabs" class:collapsed={tabsCollapsed} role="group" aria-label="清單" bind:this={tabRow}>
 					{#each middleTabs as tab (tab.id)}
 						<button type="button" data-middle={tab.id} aria-pressed={middle === tab.id} onclick={() => (navigation.setMiddle(tab.id), tab.id === 'inbox' && voice.tap())}
-							>{tab.label}{#if tab.id === 'agents'}<small>{agents.length}</small>{/if}</button
+							>{tab.label}{@render tabCount(tab.id)}</button
 						>
 					{/each}
 				</div>
@@ -708,13 +760,13 @@
 						aria-expanded={switchOpen}
 						aria-controls="middle-menu"
 						onclick={() => (switchOpen = !switchOpen)}
-						><span class="name">{currentTab.label}</span>{#if currentTab.id === 'agents'}<small>{agents.length}</small>{/if}<span class="caret" aria-hidden="true">▾</span></button
+						><span class="name">{currentTab.label}</span>{@render tabCount(currentTab.id)}<span class="caret" aria-hidden="true">▾</span></button
 					>
 					{#if switchOpen}
 						<div class="middle-menu" id="middle-menu" role="group" aria-label="清單">
 							{#each middleTabs as tab (tab.id)}
 								<button type="button" data-pick={tab.id} aria-current={middle === tab.id ? 'true' : undefined} onclick={() => pickTab(tab.id)}
-									><span class="check" aria-hidden="true">{middle === tab.id ? '✓' : ''}</span><span class="name">{tab.label}</span>{#if tab.id === 'agents'}<small>{agents.length}</small>{/if}</button
+									><span class="check" aria-hidden="true">{middle === tab.id ? '✓' : ''}</span><span class="name">{tab.label}</span>{@render tabCount(tab.id)}</button
 								>
 							{/each}
 						</div>
@@ -726,7 +778,9 @@
 			{:else if middle === 'resource'}
 				<ResourceList onopen={openAgent} />
 			{:else if middle === 'automation'}
-				<AutomationList automation={board.automation} currentId={taskId} onopen={openTask} onnew={() => navigation.go({ kind: 'automation-edit', id: null }, true)} />
+				<AutomationList automation={periodicAutomation} currentId={taskId} onopen={openTask} onnew={() => navigation.go({ kind: 'automation-edit', id: null }, true)} />
+			{:else if middle === 'events'}
+				<EventTaskList tasks={eventTasks} timeZone={board.automation.timeZone} currentId={taskId} onopen={openTask} />
 			{:else if middle === 'agents'}
 				<AgentList {agents} {controllers} {workspaces} currentId={agentId} {newIn} onopen={openAgent} onnew={openNewAgent} />
 				<ClosedAgents {closed} currentId={agentId} onopen={openAgent} />
@@ -767,7 +821,7 @@
 		<section class="detail" bind:this={detail} tabindex="-1">
 			{#if view === null}
 				<p class="empty">
-					{middle === 'agents' ? '從 Herdr 清單選一個 Agent，看它的對話紀錄。' : middle === 'automation' ? '從自動化選一項看內容。' : '從待辦選一則，或點主控名稱看它的資訊。'}
+					{middle === 'agents' ? '從 Herdr 清單選一個 Agent，看它的對話紀錄。' : middle === 'automation' || middle === 'events' ? '從清單選一個任務看內容。' : '從待辦選一則，或點主控名稱看它的資訊。'}
 				</p>
 			{:else}
 				<div class="topbar">
@@ -788,7 +842,7 @@
 						</button>
 					{:else if view.kind === 'automation' || view.kind === 'automation-edit'}
 						<button class="whose" onclick={scrollToTop}>
-							<strong>{view.kind === 'automation-edit' ? (view.id === null ? '新增任務' : '編輯任務') : (taskView?.task.name ?? '自動化任務')}</strong>
+							<strong>{view.kind === 'automation-edit' && !(taskView && isEventView(taskView)) ? (view.id === null ? '新增任務' : '編輯任務') : (taskView?.task.name ?? '自動化任務')}</strong>
 						</button>
 					{:else if owner}
 						<!-- Tappable while the controller is on the roster; an archived item of one that left is not. -->
@@ -854,7 +908,12 @@
 						</div>
 					{/if}
 				{:else if view.kind === 'automation'}
-					{#if taskView}
+					{#if taskView && isEventView(taskView)}
+						<!-- Another task is a new page: nothing pressed on the last one carries over. -->
+						{#key taskView.task.id}
+							<EventTask view={taskView} timeZone={board.automation.timeZone} onchanged={() => void board.reloadAutomation()} onopenagent={openAgent} ondeleted={() => navigation.go(null)} />
+						{/key}
+					{:else if taskView}
 						<AutomationTask view={taskView} timeZone={board.automation.timeZone} onedit={() => navigation.go({ kind: 'automation-edit', id: taskView.task.id })} onchanged={() => void board.reloadAutomation()} onopenagent={openAgent} ondeleted={() => navigation.go(null)} />
 					{:else}
 						<p class="empty">這個任務已不存在。</p>
@@ -882,7 +941,10 @@
 						<p class="empty">這張紅卡已不存在。</p>
 					{/if}
 				{:else if view.kind === 'automation-edit'}
-					{#if view.id === null || taskView}
+					{#if taskView && isEventView(taskView)}
+						<!-- An address typed or kept from before: an event task has no form (#758). -->
+						<p class="empty" data-event-unchangeable>{EVENT_UNCHANGEABLE}</p>
+					{:else if view.id === null || taskView}
 						{#key view.id}
 							<AutomationForm task={taskView?.task ?? null} onsaved={taskSaved} oncancel={() => navigation.back()} />
 						{/key}
@@ -1256,6 +1318,27 @@
 		background: color-mix(in srgb, var(--text) 10%, var(--bg));
 		font-size: max(1rem, var(--min-font, 0px));
 		font-weight: 400;
+	}
+	/* Read out with the number, not seen. */
+	.sr-only {
+		position: absolute;
+		top: 0;
+		left: 0;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+		white-space: nowrap;
+	}
+	/* Event tasks waiting: a filled mark, seen from any tab. */
+	.middle-tabs small.waiting,
+	.middle-switch small.waiting,
+	.middle-menu small.waiting {
+		/* Holds its read-out words, so they never reach past the row. */
+		position: relative;
+		background: var(--warn);
+		color: var(--bg);
+		font-weight: 700;
 	}
 	.summary {
 		display: flex;
