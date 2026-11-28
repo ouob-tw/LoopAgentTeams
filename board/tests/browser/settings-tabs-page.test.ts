@@ -174,6 +174,8 @@ for (const size of SIZES) {
 		await openSettings();
 
 		expect(await tab.eval(state)).toEqual(expected(0));
+		// Opening focuses 關閉, not 登出 before it: a second Enter must not end the login.
+		expect(await tab.eval(`document.activeElement.textContent.trim()`)).toBe('關閉');
 		// No category left alone on a row of its own at a phone's width.
 		if (size.width < 601) expect(await tab.eval(`[...${DIALOG}.querySelectorAll('[role="tab"]')].map((t) => t.offsetTop).filter((top, _, all) => all.filter((other) => other === top).length < 2)`)).toEqual([]);
 		const listTop = () => tab.eval<number>(`${DIALOG}.querySelector('[role="tab"]').getBoundingClientRect().top`);

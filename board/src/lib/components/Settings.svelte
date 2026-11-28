@@ -59,6 +59,7 @@
 	}
 
 	let dialog: HTMLDialogElement;
+	let closeButton: HTMLButtonElement;
 	let preauth = $state() as PreauthSettings;
 	let unattended = $state() as UnattendedSettings;
 	let passkeys = $state() as PasskeySettings;
@@ -69,7 +70,11 @@
 	 *  read; with `{ demo }`, in 帳號與分享 at that demo's 示意頁分享 switch, once the list is read. */
 	export function open(at?: string | { demo: string }, start: Category = 'look') {
 		const anchor = typeof at === 'string' ? at : undefined;
-		if (!dialog.open) dialog.showModal();
+		if (!dialog.open) {
+			dialog.showModal();
+			// Not the first button, 登出: a second Enter must not end the login.
+			closeButton.focus();
+		}
 		void select(typeof at === 'object' ? 'account' : start);
 		void unattended.load();
 		void passkeys.load();
@@ -205,7 +210,7 @@
 			<button class="logout" disabled={loggingOut} onclick={() => void logout()}>
 				<LogOut size="1em" aria-hidden="true" />{loggingOut ? '登出中…' : '登出'}
 			</button>
-			<button class="close" onclick={() => dialog.close()}>關閉</button>
+			<button class="close" bind:this={closeButton} onclick={() => dialog.close()}>關閉</button>
 		</header>
 		{#if logoutFailed}
 			<p class="failed" role="alert">沒有登出，請再試一次。</p>
