@@ -176,7 +176,26 @@ export interface AutomationRun {
 	fix?: RunFix;
 	/** Once the agent replied: the first check, while `review` is the second, final one. */
 	firstReview?: RunReview;
+	/** A check made before the schedule runs a period again after a run of it failed (#751): it
+	 *  starts no task agent. Success once it found the period's results there; skipped otherwise,
+	 *  and the rerun follows. */
+	precheck?: RunPrecheck;
 }
+
+/** How a period's failed run was looked at again before a rerun (#751): by the checking agent against
+ *  the checklist (`review`), or, with no checklist, by the failed run's conversation's last reply. */
+export interface RunPrecheck {
+	/** The failed run whose period it is. */
+	of: string;
+	by: 'review' | 'reply';
+	/** `reply`: when the DONE that came after the failure was written. */
+	repliedAt?: number;
+}
+
+/** Run statuses that a rerun of the period is checked before (#751): the agent may have been taken
+ *  back and finished the work after the board judged it. A success whose check ended without a pass
+ *  is one too. */
+export const PRECHECKED: readonly RunStatus[] = ['failed', 'timeout', 'quota', 'stopped'];
 
 /** The one continue message a run's Codex agent got after its first usage limit: the conversation's
  *  position when it was sent, and the position of the user input that read it, once seen. */
@@ -505,8 +524,10 @@ export const reviewFailed = (run: Pick<AutomationRun, 'status' | 'review' | 'fix
 	run.fix?.status !== 'fixing' &&
 	(run.review?.status === 'fail' || (run.review?.status === 'error' && (run.review.ended !== 'stopped' || run.firstReview !== undefined)));
 /** What a run's label says: its own status, or how its check ended when that went otherwise than a pass. */
-export function runLabel(run: Pick<AutomationRun, 'status' | 'review' | 'asks' | 'fix' | 'firstReview'>): { text: string; key: string } {
+export function runLabel(run: Pick<AutomationRun, 'status' | 'review' | 'asks' | 'fix' | 'firstReview' | 'precheck'>): { text: string; key: string } {
 	if (openAsk(run)) return { text: STATE_TEXT.asking, key: 'asking' };
+	if (run.precheck && run.review?.status === 'checking') return { text: '▶ 重跑前核對中', key: 'running' };
+	if (run.precheck && run.status === 'skipped') return { text: run.review?.status === 'fail' ? '↻ 核對沒過，重跑' : '↻ 核對沒做完，重跑', key: 'skipped' };
 	const review = run.status === 'success' ? run.review : undefined;
 	if (!review || review.status === 'pass') return { text: RUN_STATUS_TEXT[run.status], key: run.status };
 	if (run.fix?.status === 'fixing') return { text: '↻ 交回修正中', key: 'running' };
@@ -515,7 +536,22 @@ export function runLabel(run: Pick<AutomationRun, 'status' | 'review' | 'asks' |
 	return { text: STATE_TEXT['check-failed'], key: 'check-failed' };
 }
 /** An automatic try made on the day `time` falls in: whatever it ended in, it is the day's one. */
-export const triedOn = (runs: readonly AutomationRun[], time: number) => runs.some((run) => run.trigger === 'auto' && sameDay(run.startedAt, time));
+/** A check before a rerun (#751) counts while it is open or when the user stopped it: the rerun then
+ *  waits for the next day, which checks again. */
+export const triedOn = (runs: readonly AutomationRun[], time: number) => runs.some((run) => run.trigger === 'auto' && (!run.precheck || run.status === 'stopped' || isOpen(run)) && sameDay(run.startedAt, time));
+
+/** The failed run of the period at `now` whose results are to be checked before a rerun (#751): the
+ *  period's latest run, when it failed and no check of it was made since. Null on a first try. */
+export function precheckDue(task: AutomationTask, runs: readonly AutomationRun[], now: number): AutomationRun | null {
+	const period = periodOf(task.schedule, now);
+	const own = runs.filter((run) => run.period === period && run.trigger !== 'preview' && run.trigger !== 'carried');
+	const latest = own.filter((run) => !run.precheck && run.status !== 'skipped').reduce<AutomationRun | undefined>((last, run) => (!last || run.startedAt > last.startedAt ? run : last), undefined);
+	if (!latest || isOpen(latest)) return null;
+	const checkEnded = latest.status === 'success' && latest.review !== undefined && latest.review.status !== 'pass';
+	if (!PRECHECKED.includes(latest.status) && !checkEnded) return null;
+	// One the user stopped did not look: the next day's rerun is checked again.
+	return own.some((run) => run.precheck?.of === latest.id && run.status !== 'stopped') ? null : latest;
+}
 
 /** When today's automatic try is due: at the set time (a time already passed is due now, so a
  *  restart catches up). Null when no try is due today: paused, outside the window, tried already, the period
@@ -667,12 +703,24 @@ export function runReviewText(run: Pick<AutomationRun, 'review' | 'fix' | 'first
 
 /** Why a run ended as it did, in one short line. */
 export function runReason(run: AutomationRun): string {
+	if (run.precheck) return precheckText(run);
 	if (run.reason) return run.reason;
 	if (run.status === 'success') return run.checks?.length ? `${run.checks.length} 項檢查都通過` : run.agentName ? 'Agent 回覆 DONE' : '結束碼 0';
 	const failed = run.checks?.filter((check) => !check.ok) ?? [];
 	if (run.exitCode !== undefined && run.exitCode !== 0) return run.exitCode === null ? '被中止' : `結束碼 ${run.exitCode}`;
 	if (failed.length) return `檢查沒過：${failed.map((check) => check.label).join('、')}`;
 	return RUN_STATUS_TEXT[run.status].slice(2);
+}
+
+/** A check before a rerun (#751) in one short line: what it found and what the schedule did. */
+export function precheckText(run: Pick<AutomationRun, 'status' | 'review' | 'precheck'>): string {
+	if (run.review?.status === 'checking') return '這期之前判失敗，重跑前先請檢查官核對成果是否已在';
+	if (run.status === 'success') {
+		if (run.precheck?.repliedAt !== undefined) return `重跑前核對通過：判失敗後 Agent 在 ${timeFormat(TIME_ZONE).full(run.precheck.repliedAt)} 回覆 DONE，這期不重跑`;
+		return '重跑前核對通過：這期的成果已在，不重跑';
+	}
+	if (run.status === 'stopped') return '重跑前核對被停止，今天不重跑，明天重跑前再核對';
+	return run.review?.status === 'fail' ? '重跑前核對沒過，照常重跑' : '重跑前核對沒有做完，照常重跑';
 }
 
 /** The list card's last line: how the latest run ended, or that there has been none. */
@@ -689,6 +737,7 @@ export function lastRunText(run: AutomationRun | undefined, timeZone: string, no
 	if (replied !== undefined) return `${at.full(run.startedAt)} 開始，${at.clock(replied)} 你已回覆，繼續中`;
 	if (run.status === 'running') return `${at.full(run.startedAt)} 開始，執行中`;
 	const when = at.full(run.endedAt ?? run.startedAt);
+	if (run.precheck) return run.review?.status === 'checking' ? `${at.full(run.startedAt)} 開始，重跑前核對中` : `${when} ${run.status === 'success' ? '完成，重跑前核對通過' : precheckText(run)}`;
 	if (run.status === 'success' && run.review && (run.fix || run.firstReview)) return `${when} 做完，${runReviewText(run)}`;
 	if (run.status === 'success' && run.review && run.review.status !== 'pass') return `${when} 做完，但${run.review.status === 'checking' ? '還在檢查' : reviewText(run.review)}`;
 	if (run.status === 'success') return `${when} 完成，${run.review ? reviewText(run.review) : runReason(run)}`;
