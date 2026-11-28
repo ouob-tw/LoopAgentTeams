@@ -3,7 +3,7 @@
 // category and nowhere else; each category says whose it is; the list is left of the content, above it
 // on a phone; arrows, Home and End switch it. With LAT_BOARD_SHOTS set, each category is saved as a
 // frame, in the light and the dark theme.
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
@@ -47,7 +47,16 @@ let tab: Tab;
 beforeAll(async () => {
 	if (!CHROME) return;
 	config = mkdtempSync(join(tmpdir(), 'lat-board-settings-tabs-'));
-	fixture = await startFixture({ env: { XDG_CONFIG_HOME: config } });
+	const data = join(config, 'demo-data');
+	for (const name of ['shared-demo', 'a-very-long-demo-page-name-that-must-remain-readable', ...Array.from({ length: 7 }, (_, i) => `demo-${i}`)]) {
+		const folder = join(data, 'site', name);
+		mkdirSync(folder, { recursive: true });
+		writeFileSync(join(folder, 'index.html'), '<!doctype html><title>Demo</title>');
+	}
+	fixture = await startFixture({ port: Number(process.env.LAT_SETTINGS_TEST_PORT || 0), env: { XDG_CONFIG_HOME: config, LAT_BOARD_DEMO_DIR: data } });
+	const cookie = await fixture.login();
+	const shared = await fixture.fetch('/api/demo-share', { cookie, method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'shared-demo', shared: true }) });
+	expect(shared.status).toBe(200);
 	fixture.setHelper({ output: { controllers: [] }, realUnattended: uvPython(), realPreauth: uvPython() });
 	await fixture.refresh(await fixture.login());
 }, 30_000);
@@ -127,10 +136,13 @@ const layoutProblems = `(() => {
 	for (const el of dialog.querySelectorAll('*')) {
 		if (!el.checkVisibility()) continue;
 		const named = el.getAttribute('aria-label') || el.textContent.trim().slice(0, 20);
-		if ([...el.childNodes].some((node) => node.nodeType === 3 && node.textContent.trim()) && parseFloat(getComputedStyle(el).fontSize) < 16) problems.push(named + ' text under 16px');
+		if ((el.matches('section.share input[type=search]') || [...el.childNodes].some((node) => node.nodeType === 3 && node.textContent.trim())) && parseFloat(getComputedStyle(el).fontSize) < 16) problems.push(named + ' text under 16px');
 		if (width > 600 || !el.matches('button, input:not([type="checkbox"], [type="radio"]), textarea, select, label')) continue;
 		const r = el.getBoundingClientRect();
 		if (r.height < 43.9 || r.width < 43.9) problems.push(named + ' too small to tap');
+	}
+	for (const el of dialog.querySelectorAll('section.share, section.share ul, section.share li, section.share label')) {
+		if (el.checkVisibility() && el.scrollWidth > el.clientWidth + 1) problems.push('share content scrolls sideways: ' + el.tagName);
 	}
 	// A phone's dialog is the whole screen, whichever category shows.
 	if (width <= 600 && (frame.left !== 0 || frame.top !== 0 || Math.abs(frame.width - width) > 0.5 || Math.abs(frame.height - innerHeight) > 0.5)) problems.push('dialog not the whole screen');
@@ -182,12 +194,24 @@ for (const size of SIZES) {
 		const top = await listTop();
 		for (const [at, category] of CATEGORIES.entries()) {
 			await tab.pointerClick(`#settings-tab-${category.id}`);
+			if (category.id === 'account') await tab.until(`${DIALOG}.querySelectorAll('section.share input[role="switch"]').length === 9`, 'published demo rows');
 			await tab.until(`${DIALOG}.querySelector('#settings-tab-${category.id}').getAttribute('aria-selected') === 'true'`, category.label);
 			expect(await tab.eval(state)).toEqual(expected(at));
 			for (const scheme of ['light', 'dark'] as const) {
 				await theme(scheme);
 				expect([category.label, scheme, await tab.eval(layoutProblems)]).toEqual([category.label, scheme, []]);
+				if (category.id === 'account') {
+					await tab.eval(`${DIALOG}.querySelector('section.share').scrollIntoView({ block: 'start' })`);
+					expect(await tab.eval(`${DIALOG}.querySelector('section.share .count').textContent.includes('1') && !!${DIALOG}.querySelector('section.share input[type=search]')`)).toBe(true);
+				}
 				await shot(tab, `${size.width}-${at + 1}-${category.id}-${scheme}`);
+				if (category.id === 'account') {
+					await tab.eval(`(() => { const input = ${DIALOG}.querySelector('section.share input[type=search]'); input.value = 'no-match-746'; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+					await tab.until(`${DIALOG}.querySelector('section.share li.note')?.textContent.includes('沒有符合')`, 'no match');
+					expect(await tab.eval(layoutProblems)).toEqual([]);
+					await tab.eval(`(() => { const input = ${DIALOG}.querySelector('section.share input[type=search]'); input.value = ''; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+					await tab.until(`${DIALOG}.querySelectorAll('section.share input[role=switch]').length === 9`, 'rows restored');
+				}
 			}
 			// The list stays under the finger as categories of other heights show.
 			expect(await listTop()).toBe(top);
@@ -233,7 +257,19 @@ for (const size of SIZES) {
 		for (let i = 0; i < 20; i++) await tab.eval(`${DIALOG}.querySelector('[aria-label="調大"]').click()`);
 		for (const category of CATEGORIES) {
 			await tab.pointerClick(`#settings-tab-${category.id}`);
-			expect([category.label, await tab.eval(layoutProblems)]).toEqual([category.label, []]);
+			for (const scheme of ['light', 'dark'] as const) {
+				await theme(scheme);
+				expect([category.label, scheme, await tab.eval(layoutProblems)]).toEqual([category.label, scheme, []]);
+				if (category.id === 'account') {
+					await tab.eval(`${DIALOG}.querySelector('section.share').scrollIntoView({ block: 'start' })`);
+					await shot(tab, `${size.width}-account-largest-${scheme}`);
+					await tab.eval(`(() => { const input = ${DIALOG}.querySelector('section.share input[type=search]'); input.value = 'no-match-746'; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+					await tab.until(`${DIALOG}.querySelector('section.share li.note')?.textContent.includes('沒有符合')`, 'no match');
+					expect(await tab.eval(layoutProblems)).toEqual([]);
+					await tab.eval(`(() => { const input = ${DIALOG}.querySelector('section.share input[type=search]'); input.value = ''; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+					await tab.until(`${DIALOG}.querySelectorAll('section.share input[role=switch]').length === 9`, 'rows restored');
+				}
+			}
 		}
 		await tab.pointerClick('#settings-tab-look');
 		await shot(tab, `${size.width}-8-largest-min-font-dark`);
