@@ -397,10 +397,8 @@ function createBoard(): Board {
 		// 為事件任務暫停並關閉自己 (#764): the record now, the client closed once the answer is back.
 		away: (proposer, taskId) => {
 			const agent = sources?.agents.find((entry) => entry.id !== null && entry.id === proposer.sessionId);
-			const went = automation.away(proposer, taskId, { pane: agent?.herdr.pane ?? null, workspace: agent?.herdr.workspace ?? null });
+			const went = automation.away(proposer, taskId, { pane: agent?.herdr.pane ?? null, workspace: agent?.herdr.workspace ?? null, closeAfterMs: config.eventAwayCloseMs, close: closeAway });
 			if (!went.ok) return { ok: false, error: went.error, reason: went.message };
-			const closing = setTimeout(() => void closeAway(went.away), config.eventAwayCloseMs);
-			closing.unref?.();
 			return { ok: true, id: went.task.id, status: 'away', existed: went.existed };
 		},
 		taskExists: (taskId) => automation.snapshot().tasks.some((entry) => entry.task.id === taskId),

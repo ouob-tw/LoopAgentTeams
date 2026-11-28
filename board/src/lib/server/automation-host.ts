@@ -9,12 +9,12 @@ import type { Board } from './board.ts';
 import { backgroundGoesOn } from './claude-background.ts';
 import type { BoardConfig } from './config.ts';
 import { killAgent, launchBlocked, listAgents, resumeAgent, sendMessage, stopAgent } from './hcom.ts';
-
-/** The sender an event task's message to its controller carries (#764). */
-export const EVENT_SENDER = 'lat-board';
 import { readProvider, readTranscript } from './helper.ts';
 import { automationWorkspace, readScreen } from './herdr.ts';
 import { startLaunch } from './launch.ts';
+
+/** The sender an event task's message to its controller carries (#764). */
+export const EVENT_SENDER = 'lat-board';
 
 /** hcom's launch failed on its own database lock (#657): the wait before each retry, so at most three. */
 export const LAUNCH_LOCK_WAITS_MS: readonly number[] = [60_000, 120_000, 240_000];

@@ -54,7 +54,7 @@ const STARTED_WELL_MS = 60_000;
 
 /** Why a request was not taken; the acceptor itself adds `refused` (sender not verified) and
  *  `board-timeout` (no reply in 30 s). */
-export type RefusalCode = 'bad-request' | 'not-found' | 'not-yours' | 'ended' | 'board' | 'not-controller' | 'not-resume' | 'busy';
+export type RefusalCode = 'bad-request' | 'not-found' | 'not-yours' | 'ended' | 'board' | 'not-controller' | 'not-resume' | 'busy' | 'other-wait' | 'no-place';
 export type AcceptorReply =
 	| { ok: true; id: string; status: 'pending' | 'invalid' | 'withdrawn'; errors?: Record<string, string> }
 	/** 為事件任務暫停並關閉自己 (#764): `id` is the event task's; the board closes the controller next. */

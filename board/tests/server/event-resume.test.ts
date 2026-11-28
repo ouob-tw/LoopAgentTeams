@@ -4,7 +4,7 @@
 // closes the controller through the fake hcom; on the event it resumes the session (`hcom r`) with
 // the event message, or sends one HCOM message (the fake's `send --json` receipt) when the controller
 // runs. Every hcom call goes to the fake, every folder is the test's own.
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, expect, test } from 'bun:test';
 import { jsonLines, logged, sleep, type Fixture } from '../harness.ts';
@@ -59,8 +59,12 @@ test('暫停並關閉自己 closes the controller and leaves its LAT session, a 
 	const s = await setup({ LAT_BOARD_EVENT_AWAY_CLOSE_SECONDS: '0.2' });
 	const { board, work } = s;
 	ctrlRunning(s);
-	const sessionFile = join(s.ctrl.folder, '.lat/sessions/session-ctrl.json');
-	const session = readFileSync(sessionFile, 'utf8');
+	// Its LAT state: the session record, a work ledger and a question file, read back unchanged.
+	mkdirSync(join(s.ctrl.folder, '.lat/ledgers'), { recursive: true });
+	writeFileSync(join(s.ctrl.folder, '.lat/ledgers/ctrl.json'), JSON.stringify({ items: [{ id: 1, status: 'open' }] }));
+	writeFileSync(join(s.ctrl.folder, '.lat/questions-ctrl.md'), '## Q1\n待答\n');
+	const latState = () => Object.fromEntries((readdirSync(join(s.ctrl.folder, '.lat'), { recursive: true }) as string[]).sort().map((name) => [name, statSync(join(s.ctrl.folder, '.lat', name)).isFile() ? readFileSync(join(s.ctrl.folder, '.lat', name), 'utf8') : '']));
+	const before = latState();
 	const task = await resumeTask(s, { type: 'file', path: join(work, 'out.txt') }, { repeat: true });
 	expect((await viewOf(s, task)).task).not.toHaveProperty('agent');
 
@@ -78,7 +82,7 @@ test('暫停並關閉自己 closes the controller and leaves its LAT session, a 
 	for (let read = 0; read < 3; read++) await call(board, 'POST', '/api/refresh', { cookie: s.cookie });
 	await sleep(300);
 	expect(pauseRecord(board)).toMatchObject({ reason: 'event-task', task_id: task });
-	expect(readFileSync(sessionFile, 'utf8')).toBe(session);
+	expect(latState()).toEqual(before);
 
 	// The roster: the controller as the helper still binds it, waiting for its task.
 	board.list([board.bound('ctrl', 'grp-ctrl', { session_id: 'session-ctrl', workspace: s.ctrl.folder })]);
@@ -183,7 +187,7 @@ test('stopped after the event and before the resume came back, the restarted boa
 	await closedOnce(s);
 
 	// The resume hangs; the board stops while it is on its way.
-	ctrlClosed(s, { sleepMs: 5000 });
+	ctrlClosed(s, { sleepMs: 3500 });
 	writeFileSync(join(work, 'a.txt'), 'x');
 	touchAt(join(work, 'a.txt'), T0 + MINUTE);
 	board.setClock(T0 + 2 * MINUTE);
@@ -244,4 +248,39 @@ test('a 開新 Agent task writes no 事件等待 record: 暫停並關閉自己 i
 	expect(await away(s, task)).toMatchObject({ ok: false, error: 'not-resume' });
 	expect(pauseRecord(s.board)).toBeNull();
 	expect(hcomCalls(s.board).some((entry) => entry.args[0] === 'kill')).toBe(false);
+});
+
+test('暫停並關閉自己 is refused while the board cannot place the controller in Herdr, for a second task, and with its link paused; an event inside the close delay is messaged and the controller left open; a link-paused controller is never resumed a second time', async () => {
+	const s = await setup({ LAT_BOARD_EVENT_AWAY_CLOSE_SECONDS: '1.5' });
+	const { board, work } = s;
+	const first = await resumeTask(s, { type: 'file', path: join(work, 'a.txt') });
+	const second = await resumeTask(s, { type: 'file', path: join(work, 'b.txt') });
+	// Not in Herdr's list: nowhere to resume it later, so it must stay open.
+	expect(await away(s, first)).toMatchObject({ ok: false, error: 'no-place' });
+	expect(pauseRecord(board)).toBeNull();
+
+	ctrlRunning(s);
+	await seenInHerdr(s);
+	expect(await away(s, first)).toMatchObject({ ok: true });
+	expect(await away(s, second)).toMatchObject({ ok: false, error: 'other-wait' });
+	// The event inside the close delay: one HCOM message to it, no close, no resume.
+	writeFileSync(join(work, 'a.txt'), 'x');
+	touchAt(join(work, 'a.txt'), T0 + MINUTE);
+	board.setClock(T0 + 2 * MINUTE);
+	await inState(s, first, 'done');
+	await eventually(async () => logged(board.serverOutput(), 'event_task_away_left_open').length > 0, 'the close to be dropped');
+	expect(sends(board)).toHaveLength(1);
+	expect(hcomCalls(board).some((entry) => entry.args[0] === 'kill' || entry.args[0] === 'r')).toBe(false);
+	expect(pauseRecord(board)).toBeNull();
+
+	// Its link paused from the board (an ordinary record) and hcom no longer listing it: still running, so no `hcom r`.
+	writeFileSync(pauseFile(board), JSON.stringify({ session_id: 'session-ctrl', hcom_name: 'grp-ctrl', client: 'claude', pane: 'wW:p-ctrl', paused_at: new Date(T0).toISOString() }));
+	expect(await away(s, second)).toMatchObject({ ok: false, error: 'other-wait' });
+	board.setHcom({ agents: [listed(s.luna)] });
+	writeFileSync(join(work, 'b.txt'), 'x');
+	touchAt(join(work, 'b.txt'), T0 + 3 * MINUTE);
+	board.setClock(T0 + 4 * MINUTE);
+	const failed = await inState(s, second, 'failed');
+	expect(handoffRuns(failed)[0].handoff.reason).toContain('HCOM 通訊被暫停');
+	expect(resumes(board)).toHaveLength(0);
 });

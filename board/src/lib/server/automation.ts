@@ -177,8 +177,9 @@ export interface Automation {
 	remove(id: string): { ok: true } | { ok: false; status: number; message: string };
 	/** 為事件任務暫停並關閉自己 (#764): the verified controller that proposed this 接回原主控 task goes
 	 *  away until its event: its away file and 事件等待 record are written (again, when it is away
-	 *  already: `existed`). Closing its client is the caller's. */
-	away(controller: AwayController, taskId: unknown, where: { pane: string | null; workspace: string | null }): Away;
+	 *  already: `existed`). `where.close` closes its client `closeAfterMs` later, unless by then it is
+	 *  no longer away or its event is already being handed to it; a delivery waits for that close. */
+	away(controller: AwayController, taskId: unknown, where: AwayPlace): Away;
 	/** The controllers away now, by session: the task each waits for. */
 	aways(): Map<string, { taskId: string; taskName: string }>;
 	/** The kept output of one run; null when there is none. */
@@ -196,9 +197,17 @@ export interface AwayController {
 	sessionId: string | null;
 }
 
+/** Where the controller ran when it went away, and how to close it. */
+export interface AwayPlace {
+	pane: string | null;
+	workspace: string | null;
+	closeAfterMs: number;
+	close(away: EventAway): Promise<void>;
+}
+
 export type Away =
 	| { ok: true; task: AutomationTask; away: EventAway; existed: boolean }
-	| { ok: false; status: number; error: 'not-found' | 'not-yours' | 'not-resume' | 'ended' | 'busy' | 'board'; message: string };
+	| { ok: false; status: number; error: 'not-found' | 'not-yours' | 'not-resume' | 'ended' | 'busy' | 'other-wait' | 'no-place' | 'board'; message: string };
 
 const ID = /^[a-z0-9-]{1,64}$/;
 const newId = () => randomBytes(5).toString('hex');
@@ -649,6 +658,10 @@ export function createAutomation(options: {
 	/** 接回原主控 tasks' controllers away until their event, one file each (`EventAway`). */
 	const awayDir = join(dir, 'away');
 	const awayFile = (taskId: string) => join(awayDir, `${taskId}.json`);
+	/** The away controllers as their files say, by task: read once at the start, then kept here. */
+	const awayCache = new Map<string, EventAway>();
+	/** Closes of controllers that just went away, by task: a delivery waits for its task's. */
+	const closings = new Map<string, Promise<void>>();
 	/** When the scheduler last checked: periods that ended after it and by now are looked at for missed. */
 	const checkedFile = join(dir, 'checked-at.txt');
 	for (const folder of [runsDir, outputDir, missedDir, eventsDir, awayDir]) mkdirSync(folder, { recursive: true, mode: 0o700 });
@@ -731,7 +744,7 @@ export function createAutomation(options: {
 	}
 
 	/** The controller away for this task, as its file says; null when there is none (or it cannot be read). */
-	function readAway(taskId: string): EventAway | null {
+	function loadAway(taskId: string): EventAway | null {
 		try {
 			const away = JSON.parse(readFileSync(awayFile(taskId), 'utf8')) as EventAway;
 			if (away?.version === 1 && away.taskId === taskId && typeof away.sessionId === 'string' && typeof away.hcomName === 'string') return away;
@@ -739,6 +752,13 @@ export function createAutomation(options: {
 			// None.
 		}
 		return null;
+	}
+	const readAway = (taskId: string): EventAway | null => awayCache.get(taskId) ?? null;
+
+	function writeAway(away: EventAway): void {
+		mkdirSync(awayDir, { recursive: true, mode: 0o700 });
+		writeAtomic(awayFile(away.taskId), JSON.stringify(away) + '\n');
+		awayCache.set(away.taskId, away);
 	}
 
 	/** The 事件等待 record of an away controller, written whole into the shared pause folder. */
@@ -756,6 +776,7 @@ export function createAutomation(options: {
 			if (isEventWait(record) && record.task_id === taskId) clearPause(options.pausedDir, away.sessionId);
 		}
 		rmSync(awayFile(taskId), { force: true });
+		awayCache.delete(taskId);
 		log('INFO', 'automation', 'event_task_away_ended', { task_id: taskId, controller: away.hcomName, why });
 		return away;
 	}
@@ -902,15 +923,24 @@ export function createAutomation(options: {
 		for (const name of names) {
 			const taskId = name.slice(0, -'.json'.length);
 			const task = tasks.get(taskId);
-			const away = readAway(taskId);
-			if (!away || !task || !resumes(task) || waits.get(taskId)?.ended) {
-				if (away) endAway(taskId, 'task-gone');
-				else rmSync(awayFile(taskId), { force: true });
+			const away = loadAway(taskId);
+			if (!away) {
+				rmSync(awayFile(taskId), { force: true });
+				continue;
+			}
+			awayCache.set(taskId, away);
+			if (!task || !resumes(task)) {
+				endAwaySafely(taskId, 'task-gone');
 				continue;
 			}
 			const last = latestHandoff(runs.get(taskId) ?? []);
 			if (last?.handoff.status === 'handed' && (last.handoff.settledAt ?? 0) >= Date.parse(away.pausedAt)) {
-				endAway(taskId, 'handed');
+				endAwaySafely(taskId, 'handed');
+				continue;
+			}
+			// Ended while it was away (the board stopped before removing it): the user hears now.
+			if (waits.get(taskId)?.ended) {
+				if (endAwaySafely(taskId, 'ended')) options.notify?.({ type: 'event-notice', task, notice: 'controller-waiting', controller: away.hcomName });
 				continue;
 			}
 			if (!options.pausedDir) continue;
@@ -1610,6 +1640,8 @@ export function createAutomation(options: {
 			ended(task, done);
 		};
 		try {
+			// A controller the board is closing now is resumed once it is closed, not messaged as it goes.
+			await closings.get(task.id);
 			const sessionId = task.source?.proposer.sessionId;
 			if (!sessionId) return fail('不知道原主控的 session，沒辦法接回');
 			const text = resumeNote(task, handoffOf().event);
@@ -1624,6 +1656,9 @@ export function createAutomation(options: {
 			}
 			// Listed but not on its link (still starting, or going): a resume could make a second one.
 			if (own.length) return fail(`原主控在 hcom 的清單上是「${own[0].status ?? '狀態不明'}」，不確定它是否還開著，沒有接回也沒有傳訊`);
+			// Its HCOM link paused from the board: it still runs in Herdr, so a resume would make a second one.
+			const pause = options.pausedDir ? readPauses(options.pausedDir).get(sessionId) : undefined;
+			if (pause && !isEventWait(pause)) return fail('原主控的 HCOM 通訊被暫停了，它還開著；請先在看板恢復它的通訊，再按重試接手');
 			const resumed = await host.resumeController(sessionId, readAway(task.id)?.workspace ?? null, text);
 			if (resumed.outcome === 'started') return handed({ sessionId, resumed: { name: resumed.name } });
 			if (resumed.outcome === 'pending') return unsure(`接回還沒確定：${resumed.reason ?? '原因不明'}`);
@@ -2030,28 +2065,52 @@ export function createAutomation(options: {
 			const view = eventView(task, runs.get(task.id) ?? []);
 			if (view?.ended) return refuse(409, 'ended', `這個事件任務已經結束：${EVENT_STATE_TEXT[view.state]}`);
 			if (view?.state === 'handing' || busy(task.id)) return refuse(409, 'busy', '這個事件任務正在接手，看板正把事件交給你；不用關掉自己');
+			// One pause record per session: a controller waits for one task at a time, and one whose link is paused waits for nothing.
+			const other = [...awayCache.values()].find((entry) => entry.sessionId === controller.sessionId && entry.taskId !== task.id);
+			if (other) return refuse(409, 'other-wait', `你已經在等事件任務 ${other.taskId}；一個主控一次只等一個事件任務`);
+			const record = readPauses(options.pausedDir).get(controller.sessionId);
+			if (record && !(isEventWait(record) && record.task_id === task.id)) return refuse(409, 'other-wait', '看板記著你的 HCOM 通訊已暫停，不能再寫事件等待');
+			if (!where.workspace) return refuse(409, 'no-place', '看板的 Herdr 清單上找不到你，不知道之後要在哪個工作區接回你；不要關掉自己，稍後再試');
 			const before = readAway(task.id);
-			const away: EventAway = before?.sessionId === controller.sessionId
-				? before
-				: { version: 1, taskId: task.id, sessionId: controller.sessionId, hcomName: controller.name, client: controller.client, pane: where.pane, workspace: where.workspace, pausedAt: new Date(now()).toISOString() };
+			const away: EventAway = { version: 1, taskId: task.id, sessionId: controller.sessionId, hcomName: controller.name, client: controller.client, pane: where.pane, workspace: where.workspace, pausedAt: new Date(now()).toISOString() };
 			try {
 				// The away file first: a record is always written again from it at the next start.
-				mkdirSync(awayDir, { recursive: true, mode: 0o700 });
-				if (away !== before) writeAtomic(awayFile(task.id), JSON.stringify(away) + '\n');
+				writeAway(away);
 				writeAwayPause(away);
 			} catch (error) {
-				if (away !== before) rmSync(awayFile(task.id), { force: true });
+				// As it was: the controller is told not to close, so nothing says it is away.
+				try {
+					if (before) writeAway(before);
+					else {
+						rmSync(awayFile(task.id), { force: true });
+						awayCache.delete(task.id);
+					}
+				} catch {
+					// Read again at the next start.
+				}
 				return refuse(500, 'board', `事件等待寫不進去，不要關掉自己：${(error as Error).message}`);
 			}
-			log('INFO', 'automation', 'event_task_away', { task_id: task.id, controller: away.hcomName, existed: away === before });
+			log('INFO', 'automation', 'event_task_away', { task_id: task.id, controller: away.hcomName, existed: before !== null });
+			const closing = new Promise<void>((done) => setTimeout(done, where.closeAfterMs).unref?.())
+				.then(async () => {
+					const still = readAway(task.id);
+					// Handed back, deleted or ended meanwhile, or its event is on its way to it now: left open.
+					if (closed || still?.pausedAt !== away.pausedAt || busy(task.id)) return void log('INFO', 'automation', 'event_task_away_left_open', { task_id: task.id, controller: away.hcomName });
+					await where.close(away);
+				})
+				.catch((error: Error) => log('ERROR', 'automation', 'event_task_away_unclosed', { task_id: task.id, controller: away.hcomName, reason: error.message }))
+				.finally(() => {
+					if (closings.get(task.id) === closing) closings.delete(task.id);
+				});
+			closings.set(task.id, closing);
 			publish();
-			return { ok: true, task, away, existed: away === before };
+			return { ok: true, task, away, existed: before !== null };
 		},
 		aways() {
 			const found = new Map<string, { taskId: string; taskName: string }>();
-			for (const task of tasks.values()) {
-				const away = resumes(task) ? readAway(task.id) : null;
-				if (away) found.set(away.sessionId, { taskId: task.id, taskName: task.name });
+			for (const away of awayCache.values()) {
+				const task = tasks.get(away.taskId);
+				if (task) found.set(away.sessionId, { taskId: task.id, taskName: task.name });
 			}
 			return found;
 		},
