@@ -83,7 +83,7 @@ for (const theme of ['dark', 'light'] as const) {
 			await tab().send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width <= 760 });
 			for (const search of ['?controller=s-lead', '?agent=s-plain']) {
 				await tab().navigate(`${fixture.url}/${search}`);
-				await tab().until(`!!document.querySelector('.pill-slot .picker .part')?.getBoundingClientRect().height && !!document.querySelector('[role="tab"]')`, `the picker on ${search}`);
+				await tab().until(`!!document.querySelector('.pill-slot .picker .part')?.getBoundingClientRect().height && !!document.querySelector('.tabbar [role="tab"]')`, `the picker on ${search}`);
 				// Let hydration finish so it does not rebuild the line under the check.
 				await sleep(400);
 				// On the controller's page, pick a model and an effort so the parts hold real names.
