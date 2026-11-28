@@ -34,6 +34,10 @@ QA 由 nanu-qa123-xxxx 負責。
 ## 現場動作額度
 依任務卡；補充說明。
 '''
+# BRIEF plus the two marked blocks a first-round QA brief must carry.
+ENVIRONMENT = '### 測試環境做法\n用 `bun run preview` 啟動；假資料用 tests/fake_hcom.py。\n'
+AUTHORIZATION = '### 真實資料與身分授權\n無\n'
+QA_BRIEF = f'{BRIEF}\n{ENVIRONMENT}\n{AUTHORIZATION}'
 
 
 # The orchestrator the cards name: an untagged HCOM agent, so its full name is `nanu`.
@@ -625,9 +629,9 @@ class LedgerCase(DispatchCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return Path(result.stdout.splitlines()[-1].removeprefix('card: '))
 
-    def brief_commands(self, card):
+    def brief_commands(self, card, brief=QA_BRIEF):
         """The four ledger commands of a generated brief, with placeholders filled in."""
-        source = self.write_brief()
+        source = self.write_brief(brief)
         result = self.run_script('brief', '--card', str(card), '--input', str(source))
         self.assertEqual(result.returncode, 0, result.stderr)
         text = (self.root / 'brief.brief.md').read_text()
@@ -908,6 +912,63 @@ class LedgerBriefTests(LedgerCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('no spec coverage section', result.stderr)
         self.assertNotIn('## Spec coverage', (self.root / 'brief.brief.md').read_text())
+
+    def stage_brief(self, stage, text):
+        card = self.card_with('--ledger', str(self.ledger), '--ticket', '#123', '--stage',
+                              stage, '--evidence', 'file')
+        source = self.write_brief(text)
+        result = self.run_script('brief', '--card', str(card), '--input', str(source))
+        return result, self.root / 'brief.brief.md'
+
+    def assert_qa_refused(self, text, *missing):
+        result, output = self.stage_brief('qa', text)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(output.exists())
+        self.assertEqual(result.stdout, '')
+        for heading, example in (('### 測試環境做法', '啟動：'),
+                                 ('### 真實資料與身分授權', '可唯讀的真實紀錄：')):
+            if heading in missing:
+                self.assertIn(heading, result.stderr)
+                self.assertIn(example, result.stderr)
+            else:
+                self.assertNotIn(heading, result.stderr)
+
+    def test_qa_brief_without_either_block_is_refused_naming_both_with_examples(self):
+        self.assert_qa_refused(BRIEF, '### 測試環境做法', '### 真實資料與身分授權')
+
+    def test_qa_brief_without_the_environment_block_is_refused(self):
+        self.assert_qa_refused(f'{BRIEF}\n{AUTHORIZATION}', '### 測試環境做法')
+
+    def test_qa_brief_without_the_authorization_block_is_refused(self):
+        self.assert_qa_refused(f'{BRIEF}\n{ENVIRONMENT}', '### 真實資料與身分授權')
+
+    def test_qa_block_with_no_text_under_it_is_refused(self):
+        empty = '### 真實資料與身分授權\n\n### 其他\n無\n'
+        self.assert_qa_refused(f'{BRIEF}\n{ENVIRONMENT}\n{empty}', '### 真實資料與身分授權')
+
+    def test_qa_headings_inside_a_code_block_do_not_count(self):
+        self.assert_qa_refused(f'{BRIEF}\n```\n{ENVIRONMENT}{AUTHORIZATION}```\n',
+                               '### 測試環境做法', '### 真實資料與身分授權')
+
+    def test_complete_qa_brief_carries_the_blocks_and_the_finish_every_item_rule(self):
+        # The blocks may sit in any section, and a code block or `####` counts as their text.
+        environment = '### 測試環境做法 ###\n#### 啟動\n```\nbun run preview\n```\n'
+        text = QA_BRIEF.replace(ENVIRONMENT, '').replace(
+            '## 範圍與不能碰', f'{environment}\n## 範圍與不能碰')
+        result, output = self.stage_brief('qa', text)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        brief = output.read_text()
+        self.assertIn('bun run preview', brief)
+        self.assertIn(AUTHORIZATION.strip(), brief)
+        self.assertEqual(brief.count('逐項做完'), 1)
+        for word in ('PASS', 'FAIL', 'UNPROVEN', 'evidence', 'blocker'):
+            self.assertIn(word, brief)
+
+    def test_qa_draft_and_impl_briefs_are_not_checked_and_carry_no_such_rule(self):
+        for stage in ('qa-draft', 'impl'):
+            result, output = self.stage_brief(stage, BRIEF)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn('逐項做完', output.read_text())
 
     def test_ledger_path_with_spaces_is_quoted(self):
         spaced = self.workspace / '.lat' / 'my ledgers' / 'round.json'
