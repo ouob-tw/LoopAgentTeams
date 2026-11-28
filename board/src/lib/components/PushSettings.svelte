@@ -87,4 +87,10 @@
 		color: var(--muted);
 		line-height: 1.6;
 	}
+	@media (max-width: 600px) {
+		.reason,
+		.note {
+			margin-top: 0.15rem;
+		}
+	}
 </style>
