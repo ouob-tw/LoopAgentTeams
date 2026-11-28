@@ -113,6 +113,32 @@ test('the handover: state cookie, one-time code, then the demo address’s own l
 	expect(page.body).toContain('hello demo');
 });
 
+/** Share d1 on the board, or stop sharing it, as its settings switch does. */
+async function share(shared: boolean) {
+	const answer = await fixture.fetch('/api/demo-share', { cookie, method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'd1', shared }) });
+	expect(answer.status).toBe(200);
+}
+
+test('logged in there, an HTML page carries the 分享 button to the board; other files, and a shared page read without the login, are as published (#745)', async () => {
+	const login = await demoLogin();
+	const published = '<!doctype html><title>d1</title><script type="module" src="app.js"></script><p>hello demo</p>';
+	const page = (await demo('/d1/', [login])).body;
+	expect(page.startsWith(published)).toBe(true);
+	const button = page.slice(published.length);
+	expect(button).toMatch(/^<script>.*<\/script>$/);
+	expect(button).toContain(`href=\\"${BOARD}/?demo-share=d1\\"`);
+	expect(button).toContain('\\u5206\\u4eab');
+	expect(button).not.toContain('\\u5df2');
+	expect((await demo('/d1/app.js', [login])).body).toBe('export {}');
+	await share(true);
+	try {
+		expect((await demo('/d1/', [login])).body).toContain('\\u5df2\\u5206\\u4eab');
+		expect((await demo('/d1/')).body).toBe(published);
+	} finally {
+		await share(false);
+	}
+});
+
 /** The demo address may show its own pages in frames, no other site may (#658). */
 function expectOwnFramesOnly(what: string, headers: Answer['headers']) {
 	const policy = String(headers['content-security-policy']);
