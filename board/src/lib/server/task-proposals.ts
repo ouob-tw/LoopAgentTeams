@@ -34,10 +34,10 @@ import {
 	type ResultFile,
 	type ResultStatus
 } from '../board/task-proposals.ts';
-import { expandHome, validateTask, writeAtomic, type Automation } from './automation.ts';
+import { expandHome, validateTask, writeAtomic, writeFirst, type Automation } from './automation.ts';
 import type { BoardConfig, PasskeySite } from './config.ts';
 import type { Device } from './devices.ts';
-import { createApprovals, answerOf, type Answer } from './task-proposal-approval.ts';
+import { createApprovals, answerOf, TEST_DEVICE_REFUSED, type Answer } from './task-proposal-approval.ts';
 import { createProposalNotifier, notifyPath, type NotifyTarget } from './task-proposal-notify.ts';
 import { ownEnv } from './hcom.ts';
 import { exceptionFields, log } from './log.ts';
@@ -94,7 +94,7 @@ const isProposer = (value: any): value is Proposer =>
 /** What an approval or a rejection came to, for the page. */
 export type Decided =
 	| { ok: true; id: string; status: ResultStatus; taskId?: string; reason?: string }
-	| { ok: false; status: number; error: 'bad-request' | 'not-found' | 'ended' | 'changed'; reason: string; result?: ResultStatus };
+	| { ok: false; httpStatus: number; error: 'bad-request' | 'not-found' | 'ended' | 'changed'; reason: string; result?: ResultStatus };
 
 /** Why a saved approval is no longer what was approved. */
 export const DAMAGED_APPROVAL = '核准紀錄損壞，請 Agent 重新提案';
@@ -128,20 +128,7 @@ export function createProposalStore(options: {
 	ensureDir();
 
 	/** Link a result into place; false when one was there first. */
-	function takeResult(result: ResultFile): boolean {
-		const target = resultPath(result.id);
-		const temporary = `${target}.${process.pid}.${randomBytes(3).toString('hex')}.tmp`;
-		writeFileSync(temporary, JSON.stringify(result, null, '\t') + '\n', { mode: 0o600 });
-		try {
-			linkSync(temporary, target);
-			return true;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
-			throw error;
-		} finally {
-			rmSync(temporary, { force: true });
-		}
-	}
+	const takeResult = (result: ResultFile) => writeFirst(resultPath(result.id), JSON.stringify(result, null, '\t') + '\n');
 
 	function readJson<T>(path: string): T | null {
 		try {
@@ -172,14 +159,16 @@ export function createProposalStore(options: {
 
 	const readResult = (id: string) => readJson<ResultFile>(resultPath(id));
 
-	/** The result as its file is: none, one, or a file there that cannot be read as one. */
-	function resultState(id: string): { kind: 'none' } | { kind: 'read'; result: ResultFile } | { kind: 'broken' } {
+	/** The result as its file is: none, one, one that reads but is no result (`broken`), or one
+	 *  that cannot be read just now (`unreadable`, such as out of file handles), left for a later look. */
+	function resultState(id: string): { kind: 'none' } | { kind: 'read'; result: ResultFile } | { kind: 'broken' } | { kind: 'unreadable' } {
 		let text: string;
 		try {
 			text = readFileSync(resultPath(id), 'utf8');
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'none' };
-			return { kind: 'broken' };
+			log('WARNING', 'board.proposals', 'proposal_file_unreadable', { id, ...exceptionFields(error) });
+			return { kind: 'unreadable' };
 		}
 		try {
 			const result = JSON.parse(text) as ResultFile;
@@ -190,10 +179,10 @@ export function createProposalStore(options: {
 		return { kind: 'broken' };
 	}
 
-	/** Whom a result is told to: the proposer as verified, from the proposal or, once that is gone,
-	 *  from the approval saved in the result. */
+	/** Whom a result is told to: the proposer as verified, from the approval saved in the result
+	 *  when there is one (the proposal file may have changed since), else from the proposal. */
 	function targetOf(id: string, result: ResultFile): NotifyTarget | null {
-		const proposer = readProposal(id)?.file.proposer ?? result.approval?.source.proposer;
+		const proposer = result.approval?.source.proposer ?? readProposal(id)?.file.proposer;
 		return proposer ? { name: proposer.name, sessionId: proposer.sessionId } : null;
 	}
 
@@ -318,8 +307,9 @@ export function createProposalStore(options: {
 		return { brief: { path, text, sha256: createHash('sha256').update(bytes).digest('hex') } };
 	}
 
-	/** Expire, finish and clear what is due. 核准中 (also one whose file cannot be read: only 核准中
-	 *  is ever rewritten) is finished here, at start and on each later look, and never cleared. */
+	/** Expire, finish and clear what is due. 核准中 is finished here, at start and on each later look,
+	 *  and never cleared; so is a result file that reads but is no result, taken for a damaged 核准中:
+	 *  only 核准中 is ever rewritten, every other result is linked in whole once. */
 	function sweep(): void {
 		const at = now();
 		for (const id of ids()) {
@@ -335,6 +325,7 @@ export function createProposalStore(options: {
 				}
 				continue;
 			}
+			if (state.kind === 'unreadable') continue;
 			const result = state.kind === 'read' ? state.result : null;
 			if (!result || result.status === 'approving') {
 				finish(id, result);
@@ -453,14 +444,15 @@ export function createProposalStore(options: {
 			log('INFO', 'board.proposals', 'task_proposal_withdrawn', { proposal_id: id, proposer: proposer.name });
 			return { ok: true, id, status: 'withdrawn' };
 		},
-		/** The waiting proposal's SHA-256 as its file is now, or why it cannot be approved. */
-		version(id: string): { ok: true; hash: string } | Extract<Decided, { ok: false }> {
+		/** Whether the waiting proposal is still at the version the card showed (its SHA-256); why
+		 *  it cannot be approved otherwise. */
+		stillShown(id: string, shownHash: string): { ok: true } | Extract<Decided, { ok: false }> {
 			sweep();
 			const proposal = readProposal(id);
-			if (!proposal) return { ok: false, status: 404, error: 'not-found', reason: '找不到這個提案' };
+			if (!proposal) return { ok: false, httpStatus: 404, error: 'not-found', reason: '找不到這個提案' };
 			const state = resultState(id);
 			if (state.kind !== 'none') return endedAnswer(state.kind === 'read' ? state.result.status : undefined);
-			return { ok: true, hash: proposal.hash };
+			return proposal.hash === shownHash ? { ok: true } : changedAnswer();
 		},
 		/**
 		 * Approve the waiting proposal at the version the card showed, for the device and passkey
@@ -471,7 +463,7 @@ export function createProposalStore(options: {
 		approve(id: string, contentHash: string, by: { deviceId: string; passkeyId: string }): Decided {
 			sweep();
 			const proposal = readProposal(id);
-			if (!proposal) return { ok: false, status: 404, error: 'not-found', reason: '找不到這個提案' };
+			if (!proposal) return { ok: false, httpStatus: 404, error: 'not-found', reason: '找不到這個提案' };
 			const state = resultState(id);
 			if (state.kind !== 'none') return endedAnswer(state.kind === 'read' ? state.result.status : undefined);
 			if (proposal.hash !== contentHash) return changedAnswer();
@@ -494,11 +486,11 @@ export function createProposalStore(options: {
 		},
 		/** Reject the waiting proposal, with the user's reason when one is given. */
 		reject(id: string, reason: unknown, deviceId: string): Decided {
-			if (reason !== undefined && reason !== null && typeof reason !== 'string') return { ok: false, status: 400, error: 'bad-request', reason: '原因要是文字' };
+			if (reason !== undefined && reason !== null && typeof reason !== 'string') return { ok: false, httpStatus: 400, error: 'bad-request', reason: '原因要是文字' };
 			const text = (reason ?? '').trim();
-			if (text.length > MAX_REJECT_REASON) return { ok: false, status: 400, error: 'bad-request', reason: `原因最多 ${MAX_REJECT_REASON} 字` };
+			if (text.length > MAX_REJECT_REASON) return { ok: false, httpStatus: 400, error: 'bad-request', reason: `原因最多 ${MAX_REJECT_REASON} 字` };
 			sweep();
-			if (!readProposal(id)) return { ok: false, status: 404, error: 'not-found', reason: '找不到這個提案' };
+			if (!readProposal(id)) return { ok: false, httpStatus: 404, error: 'not-found', reason: '找不到這個提案' };
 			const rejected: ResultFile = { version: 1, id, status: 'rejected', at: stamp(), ...(text ? { reason: text } : {}), deviceId };
 			if (!takeResult(rejected)) return endedAnswer(readResult(id)?.status);
 			log('INFO', 'board.proposals', 'task_proposal_rejected', { proposal_id: id, device_id: deviceId, with_reason: !!text });
@@ -511,13 +503,13 @@ export function createProposalStore(options: {
 
 const endedAnswer = (status: ResultStatus | undefined): Extract<Decided, { ok: false }> => ({
 	ok: false,
-	status: 409,
+	httpStatus: 409,
 	error: 'ended',
 	reason: `這個提案已經有結果：${status ? (RESULT_LABELS[status] ?? status) : '已有結果'}`,
 	...(status ? { result: status } : {})
 });
 
-const changedAnswer = (): Extract<Decided, { ok: false }> => ({ ok: false, status: 409, error: 'changed', reason: '提案在你看過之後改了，請重新看過卡片再核准' });
+const changedAnswer = (): Extract<Decided, { ok: false }> => ({ ok: false, httpStatus: 409, error: 'changed', reason: '提案在你看過之後改了，請重新看過卡片再核准' });
 
 /** The acceptor and what it brings in: started at once, started again whenever it ends. */
 export function createTaskProposals(options: {
@@ -624,7 +616,7 @@ export function createTaskProposals(options: {
 		challenge: approvals.challenge,
 		approve: approvals.approve,
 		reject(id, input, device) {
-			if (device.test) return { status: 403, body: { error: 'test_device', reason: '測試用登入的裝置不能核准或拒絕任務提案' } };
+			if (device.test) return TEST_DEVICE_REFUSED;
 			if (input !== null && input !== undefined && (typeof input !== 'object' || Array.isArray(input))) return { status: 400, body: { error: 'bad-request' } };
 			return answerOf(store.reject(id, (input as { reason?: unknown } | null)?.reason, device.id));
 		},

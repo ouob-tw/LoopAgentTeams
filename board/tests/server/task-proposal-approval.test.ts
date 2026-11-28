@@ -134,6 +134,9 @@ test('approving with the board passkey makes one task equal to the proposal, wit
 	expect(message.text).toBe(`任務提案 ${id}：已核准\n任務編號：${taskId}\n查詢結果：task-proposal.py status ${id}`);
 	expect(message.agentLike).toEqual([]);
 	expect((await card(board, cookie, id)).notify).toMatchObject({ attempt: 1, status: 'sent', to: 'grp-luna' });
+	// 登入紀錄 has the challenge and the approval, with the passkey that signed.
+	expect(logged(board.serverOutput(), 'task_proposal_challenge')).toMatchObject([{ result: 'start', device_id: s.deviceId }]);
+	expect(logged(board.serverOutput(), 'task_proposal_approve')).toMatchObject([{ result: 'success', device_id: s.deviceId, passkey_id: s.passkeyId }]);
 
 	// Once only: the same answer again, or another approval, makes nothing more.
 	expect((await approve(board, cookie, id, s.passkey.answer(options))).status).toBe(409);
@@ -333,9 +336,11 @@ test('a board stopped after 核准中, or after the task and before 已核准, f
 		if (!withTask) rmSync(copy);
 	};
 
-	// Stopped after 核准中: the proposal and the agent's brief changed meanwhile, then the proposal is gone.
+	// Stopped after 核准中, before anything was told: the proposal and the agent's brief changed
+	// meanwhile, then the proposal is gone.
 	await board.stop();
 	backToApproving(false);
+	rmSync(join(proposalsDir(board), `${id}.notify.json`));
 	writeFileSync(join(luna.folder, 'brief.md'), '# 改過的說明\n');
 	writeFileSync(join(proposalsDir(board), `${id}.json`), JSON.stringify({ ...stored(board, id), task: { ...stored(board, id).task, name: '偷換' } }));
 	await board.start();
@@ -350,6 +355,12 @@ test('a board stopped after 核准中, or after the task and before 已核准, f
 	const saves = sentLog(board).filter((line) => line.kind === 'automation-task-save');
 	expect(saves).toHaveLength(2);
 	expect(saves[1]).toMatchObject({ taskId, deviceId: s.deviceId, proposalId: id, unattended: { goal: '整理 issue', done: ['needs-triage 清空'], maxHours: 1 } });
+	// The 已核准 written at the start is told, to the proposer the saved approval names.
+	await notified(board, id);
+	expect(sends(board).map((sent) => [sent.args[1], sent.text.split('\n')[0]])).toEqual([
+		['@grp-luna', `任務提案 ${id}：已核准`],
+		['@grp-luna', `任務提案 ${id}：已核准`]
+	]);
 
 	await board.stop();
 	rmSync(join(proposalsDir(board), `${id}.json`));
@@ -365,9 +376,9 @@ test('a board stopped after 核准中, or after the task and before 已核准, f
 	tasks = await tasksOf(board, cookie);
 	expect(tasks.map((task) => [task.id, task.createdAt])).toEqual([[taskId, before]]);
 	expect(resultOf(board, id).status).toBe('approved');
-	// Told once, at the approval; never again.
+	// Told once per 已核准 written; finishing it again tells nothing more.
 	await Bun.sleep(300);
-	expect(sends(board)).toHaveLength(1);
+	expect(sends(board)).toHaveLength(2);
 });
 
 test('a damaged saved approval ends 核准失敗 with no task; a task that cannot be made ends 核准失敗 and is told; a 已核准 that cannot be written is retried with no second task', async () => {
@@ -399,6 +410,25 @@ test('a damaged saved approval ends 核准失敗 with no task; a task that canno
 	expect(resultOf(board, id)).toEqual({ version: 1, id, status: 'approve-failed', at: expect.any(String), reason: '核准紀錄損壞，請 Agent 重新提案' });
 	expect(await tasksOf(board, cookie)).toHaveLength(0);
 	expect((await asAgent(board, luna, ['status', id])).stdout.trim()).toBe(`核准失敗：${id}\n原因：核准紀錄損壞，請 Agent 重新提案`);
+
+	// Damaged after its task was made: that task came from the approval as it was, so it stands.
+	const madeFirst = await proposalOf(board, luna, commandTask(luna.folder, { name: '先建好' }));
+	expect((await (await approveWith(s, madeFirst)).json()).status).toBe('approved');
+	const kept = resultOf(board, madeFirst);
+	await board.stop();
+	writeFileSync(resultPath(board, madeFirst), '{"status": "approv');
+	await board.start();
+	expect(resultOf(board, madeFirst)).toEqual({ version: 1, id: madeFirst, status: 'approved', at: expect.any(String), taskId: kept.taskId });
+	expect((await tasksOf(board, cookie)).map((task) => task.id)).toEqual([`proposal-${madeFirst}`]);
+	expect((await call(board, 'DELETE', `/api/automation/proposal-${madeFirst}`, { cookie })).status).toBe(204);
+
+	// A result that cannot be read just now is left as it is.
+	const locked = await proposalOf(board, luna, commandTask(luna.folder, { name: '鎖住' }));
+	expect((await reject(board, cookie, locked)).status).toBe(200);
+	chmodSync(resultPath(board, locked), 0o000);
+	await card(board, cookie, locked);
+	chmodSync(resultPath(board, locked), 0o600);
+	expect(resultOf(board, locked).status).toBe('rejected');
 
 	// 已核准 cannot be written: 核准中 stays until a later look can write it; one task all along.
 	const retried = await proposalOf(board, luna, commandTask(luna.folder, { name: '重試' }));
@@ -444,6 +474,18 @@ test('a proposal-made agent task runs from the approved brief, after the origina
 	expect(existsSync(join(proposalsDir(board), `${id}.json`))).toBe(false);
 	expect(readFileSync(copy, 'utf8')).toBe('# 核准的說明\n');
 	expect((await tasksOf(board, cookie))[0].agent.brief).toBe(copy);
+	// A run after the clean-up still reads the copy. (The first one is past its limit by now, or stopped here.)
+	await call(board, 'POST', `/api/automation/${task.id}/stop`, { cookie });
+	for (let tries = 0; (await (await call(board, 'GET', '/api/automation', { cookie })).json()).tasks[0].runs[0].status === 'running'; tries++) {
+		expect(tries).toBeLessThan(100);
+		await Bun.sleep(100);
+	}
+	expect((await call(board, 'POST', `/api/automation/${task.id}/run`, { cookie })).status).toBe(202);
+	const launches = await until(() => {
+		const all = (jsonLines(join(board.dir, 'hcom-calls.jsonl')) as { args: string[] }[]).filter((entry) => entry.args[0] === 'codex');
+		return all.length === 2 && all;
+	}, 10_000, 'the second run to launch its agent');
+	expect(launches[1].args[launches[1].args.indexOf('--hcom-prompt') + 1]).toStartWith(`讀取並照做 ${copy}，`);
 
 	// Edited to the agent's own brief again: an ordinary agent task, its source kept.
 	const { id: _id, paused: _p, createdAt: _c, updatedAt: _u, source: _s, ...settings } = task;
@@ -528,15 +570,20 @@ test('the new routes give a device not logged in, or no longer, the generic answ
 	const id = await proposalOf(board, luna, commandTask(luna.folder));
 	const other = await loggedIn(board, 'laptop');
 	expect((await board.cli('revoke', other.deviceId)).code).toBe(0);
+	// A login past its idle time, as the board's clock has it.
+	const idle = await loggedIn(board, 'tablet');
+	board.setClock(T0 + 8 * DAY);
+	const cookieNow = await board.login('phone');
 	for (const path of ['challenge', 'approve', 'reject']) {
-		for (const who of [undefined, other.cookie, 'lat_board_device=not-a-token']) {
+		for (const who of [undefined, other.cookie, idle.cookie, 'lat_board_device=not-a-token']) {
 			const response = await call(board, 'POST', `/api/task-proposals/${id}/${path}`, { cookie: who, body: { contentHash: 'a'.repeat(64), reason: 'x' } });
 			expect([response.status, await response.text()]).toEqual([401, JSON.stringify({ error: 'unpaired' })]);
 		}
-		const badId = await call(board, 'POST', `/api/task-proposals/NOT-AN-ID/${path}`, { cookie, body: {} });
+		const badId = await call(board, 'POST', `/api/task-proposals/NOT-AN-ID/${path}`, { cookie: cookieNow, body: {} });
 		expect([badId.status, await badId.json()]).toEqual([400, { error: 'bad-request' }]);
-		const notJson = await call(board, 'POST', `/api/task-proposals/${id}/${path}`, { cookie, raw: '{' });
+		const notJson = await call(board, 'POST', `/api/task-proposals/${id}/${path}`, { cookie: cookieNow, raw: '{' });
 		expect([notJson.status, await notJson.json()]).toEqual([400, { error: 'bad-request' }]);
 	}
-	expect((await card(board, cookie, id)).status).toBe('pending');
+	// Eight days on it has expired, and nothing above ended it otherwise.
+	expect((await card(board, cookieNow, id)).status).toBe('expired');
 });

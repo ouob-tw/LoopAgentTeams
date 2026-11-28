@@ -150,6 +150,12 @@ if (args[0] === 'events') {
 if (args[0] === 'send') {
 	// Never a real message: logged with the text it read from standard input.
 	const text = readFileSync(0, 'utf8');
+	// As hcom refuses them: no single target, or an intent it does not know.
+	const intent = args[args.indexOf('--intent') + 1];
+	if (!args[1]?.startsWith('@') || (args.includes('--intent') && !['request', 'inform', 'ack'].includes(intent))) {
+		process.stderr.write('fake hcom: send needs @target and a known --intent\n');
+		process.exit(2);
+	}
 	appendFileSync(join(dir, 'hcom-send-calls.jsonl'), JSON.stringify({ args, text, agentLike: Object.keys(process.env).filter((name) => name.startsWith('HCOM_') && name !== 'HCOM_DIR') }) + '\n');
 	const send = plan.send ?? {};
 	if (send.sleepMs) await new Promise((resolve) => setTimeout(resolve, send.sleepMs));

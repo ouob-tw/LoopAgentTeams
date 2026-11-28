@@ -1,22 +1,17 @@
 import { json } from '@sveltejs/kit';
+import { audited } from '#lib/server/auth-log.ts';
 import { getBoard } from '#lib/server/board.ts';
+import { bodyOf } from '#lib/server/task-proposal-approval.ts';
 import { PROPOSAL_ID } from '#lib/board/task-proposals.ts';
 import type { RequestHandler } from './$types';
 
-/** An assertion is a few hundred bytes; anything far larger is not one. */
-const MAX_BODY = 64 * 1024;
-
-/** The board passkey's answer to this proposal's challenge: the task is made when every check holds. */
-export const POST: RequestHandler = async ({ params, request, locals }) => {
-	if (!PROPOSAL_ID.test(params.id)) return json({ error: 'bad-request' }, { status: 400 });
-	const raw = await request.text().catch(() => '');
-	let body: unknown = null;
-	try {
-		body = raw.length <= MAX_BODY ? JSON.parse(raw) : null;
-	} catch {
-		// Not JSON: the generic 400 below.
-	}
-	if (!body || typeof body !== 'object') return json({ error: 'bad-request' }, { status: 400 });
+/** The board passkey's answer to this proposal's challenge (`response`): the task is made when
+ *  every check holds. Its 登入紀錄 line names the passkey and why it failed. */
+export const POST: RequestHandler = audited('task_proposal_approve', async ({ params, request, locals }, note) => {
+	const body = await bodyOf(request);
+	if (!PROPOSAL_ID.test(params.id) || !body) return json({ error: 'bad-request' }, { status: 400 });
 	const answer = await getBoard().taskProposals.approve(params.id, body, locals.device!, locals.https);
+	if (answer.audit?.passkey_id) note.passkey_id = answer.audit.passkey_id;
+	if (answer.audit?.cause) note.cause = answer.audit.cause;
 	return json(answer.body, { status: answer.status });
-};
+});

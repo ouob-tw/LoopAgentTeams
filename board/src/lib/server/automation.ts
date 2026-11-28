@@ -11,7 +11,7 @@
 // writes on the board is sent to the agent here (`reply`).
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fstatSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -154,6 +154,23 @@ export function writeAtomic(path: string, text: string): void {
 	const temporary = `${path}.${process.pid}.${randomBytes(3).toString('hex')}.tmp`;
 	writeFileSync(temporary, text, { mode: 0o600 });
 	renameSync(temporary, path);
+}
+
+/** Write a whole file into place unless one is there already, by linking a finished temporary file
+ *  (which fails when the name is taken): of several writers, only the first counts. False when it
+ *  was not first. */
+export function writeFirst(path: string, text: string): boolean {
+	const temporary = `${path}.${process.pid}.${randomBytes(3).toString('hex')}.tmp`;
+	writeFileSync(temporary, text, { mode: 0o600 });
+	try {
+		linkSync(temporary, path);
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+		throw error;
+	} finally {
+		rmSync(temporary, { force: true });
+	}
 }
 
 /** `~` and `~/…` are the board user's home; anything else is taken as typed. */

@@ -8,11 +8,10 @@
 // have exactly one agent with that session, and the message goes to that agent's name now (so a
 // rename still reaches it). None, several, or no session kept, and nothing is sent: a name alone may
 // belong to another agent by now.
-import { randomBytes } from 'node:crypto';
-import { linkSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { NOTIFIED, PROPOSAL_ID, RESULT_LABELS, type NotifyFile, type ResultFile } from '../board/task-proposals.ts';
-import { writeAtomic } from './automation.ts';
+import { writeAtomic, writeFirst } from './automation.ts';
 import { runCommand } from './external.ts';
 import { listAgents, ownEnv } from './hcom.ts';
 import { exceptionFields, log } from './log.ts';
@@ -56,19 +55,8 @@ export function createProposalNotifier(options: { dir: string; now(): number; co
 
 	/** Take the one attempt: false when this proposal had one already. */
 	function claim(id: string): boolean {
-		const target = notifyPath(dir, id);
-		const temporary = `${target}.${process.pid}.${randomBytes(3).toString('hex')}.tmp`;
 		const sending: NotifyFile = { version: 1, id, attempt: 1, status: 'sending', at: stamp() };
-		writeFileSync(temporary, JSON.stringify(sending, null, '\t') + '\n', { mode: 0o600 });
-		try {
-			linkSync(temporary, target);
-			return true;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
-			throw error;
-		} finally {
-			rmSync(temporary, { force: true });
-		}
+		return writeFirst(notifyPath(dir, id), JSON.stringify(sending, null, '\t') + '\n');
 	}
 
 	function record(id: string, fields: Pick<NotifyFile, 'status' | 'to' | 'reason'>) {
@@ -83,7 +71,7 @@ export function createProposalNotifier(options: { dir: string; now(): number; co
 	/** The proposer's name now, by its session; or why there is none to send to. */
 	async function recipient(target: NotifyTarget | null): Promise<{ name: string } | { reason: string }> {
 		if (!target?.sessionId) return { reason: '提案者沒有記下的 HCOM session' };
-		const list = await listAgents(config as BoardConfig);
+		const list = await listAgents(config);
 		if (!list.ok) return { reason: list.reason };
 		const matches = list.agents.filter((agent) => agent.sessionId === target.sessionId);
 		if (matches.length > 1) return { reason: `hcom 的名單裡有 ${matches.length} 個 Agent 用同一個 session，認不出是哪一個` };
@@ -99,6 +87,7 @@ export function createProposalNotifier(options: { dir: string; now(): number; co
 			record(id, { status: 'failed', reason: found.reason });
 			return;
 		}
+		// A send is as quick as a list: both only touch hcom's own database.
 		const run = await runCommand(config.hcomCommand, ['send', `@${found.name}`, '--intent', 'inform', '--from', SENDER], {
 			input: notifyText(id, result),
 			env: ownEnv(),
