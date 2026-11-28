@@ -189,6 +189,14 @@
 	});
 	$effect(() => () => void reads++);
 
+	// Where the mouse opened the list, until it moves: a row may lie under it there (the
+	// 22px bar has shrunk and the list took the strip), one the user did not choose (#754).
+	let still: { x: number; y: number } | null = null;
+	/** The latest press on a row was the mouse's, still where it opened the list: it picks and focuses nothing. */
+	let unchosen = false;
+	function rowDown(event: PointerEvent) {
+		unchosen = event.pointerType === 'mouse' && event.clientX === still?.x && event.clientY === still.y;
+	}
 	function pick(seq: number) {
 		open = false;
 		onpick(seq);
@@ -213,6 +221,7 @@
 		return 0;
 	}
 	function moved(event: PointerEvent) {
+		if (event.pointerType === 'mouse' && (event.clientX !== still?.x || event.clientY !== still.y)) still = null;
 		if (event.pointerType !== 'mouse' || !open || dragging) return;
 		// The whole scrollbar and the bar's column count as the edge, not only its outer EDGE px.
 		if (event.clientX >= innerWidth - EDGE || event.clientX >= innerWidth - gap - barW || !aside) return;
@@ -231,6 +240,7 @@
 		// A button held is a drag, of the scrollbar for one: it never brings the list up.
 		if (event.pointerType !== 'mouse' || event.buttons !== 0 || dragging || open) return;
 		measure();
+		still = { x: event.clientX, y: event.clientY };
 		open = true;
 	}
 	function down(event: PointerEvent) {
@@ -247,6 +257,7 @@
 		if (start.wasOpen && event.pointerType !== 'mouse') open = false;
 		else if (!start.wasOpen) {
 			measure();
+			still = event.pointerType === 'mouse' ? { x: event.clientX, y: event.clientY } : null;
 			open = true;
 		}
 	}
@@ -304,6 +315,7 @@
 		if (event.key !== 'Enter' && event.key !== ' ') return;
 		event.preventDefault();
 		measure();
+		still = null;
 		open = !open;
 	}}
 	class:dragging
@@ -372,7 +384,19 @@
 		<ul>
 			{#each messages as message (message.seq)}
 				<li>
-					<button type="button" class:pending={jumping === message.seq} data-seq={message.seq} onclick={() => pick(message.seq)}>
+					<button
+						type="button"
+						class:pending={jumping === message.seq}
+						data-seq={message.seq}
+						onpointerdown={rowDown}
+						onmousedown={(event) => {
+							if (unchosen) event.preventDefault();
+						}}
+						onclick={(event) => {
+							// A click from the keyboard has no press behind it (`detail` is 0).
+							if (!unchosen || !event.detail) pick(message.seq);
+						}}
+					>
 						<span class="line">{message.line}</span>
 					</button>
 				</li>

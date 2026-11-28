@@ -90,9 +90,9 @@ afterAll(async () => {
 });
 
 /** A new Chrome, logged in, on the board at `path` `width` wide. */
-async function visit(width: number, path = `/?controller=${luna.session_id}`, height = 800) {
+async function visit(width: number, path = `/?controller=${luna.session_id}`, height = 800, args: string[] = []) {
 	await browser?.close();
-	browser = await launchChrome({ screen: SCREEN });
+	browser = await launchChrome({ screen: SCREEN, args });
 	tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
@@ -445,6 +445,79 @@ test.skipIf(!CHROME)('390px: a tap anywhere on the bar, the strip left of the ha
 	}
 	expect(tab.errors).toEqual([]);
 }, 60_000);
+
+// #754: a touch screen with a mouse. The primary pointer is coarse, so the closed bar is 22px wide; the mouse
+// over it opens the list, the bar shrinks to its 12px handle and the list takes the strip under the mouse.
+// Scrollbars take no room there, as on a touch screen: the list's rows reach into that strip.
+const COARSE_WITH_MOUSE = ['--blink-settings=primaryPointerType=2,primaryHoverType=1,availablePointerTypes=6,availableHoverTypes=3', '--hide-scrollbars'];
+const press = async (x: number, y: number) => {
+	await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 });
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+};
+/** The mouse brought to a place on the closed bar: the list open with every row and flush beside the shrunk bar; every close from now on is noted. */
+async function openedUnder(x: number, y: number) {
+	await mouse(x, y);
+	await tab.until(`${SHOWN} && document.querySelectorAll('${ROWS}').length === 130 && document.querySelector('${BAR}').getBoundingClientRect().width === 12 && document.querySelector('${BLOCK}').getBoundingClientRect().right === document.querySelector('${BAR}').getBoundingClientRect().left`, 'the list under the mouse');
+	await sleep(200);
+	await tab.eval(`window.__closed = false; window.__watch?.disconnect(); window.__watch = new MutationObserver(() => { if (!(${SHOWN})) window.__closed = true; }); window.__watch.observe(document.querySelector('${BLOCK}'), { attributes: true, attributeFilter: ['class'] })`);
+}
+/** What a pick or a focused row would show. */
+const PICKED = `({ closed: window.__closed, shown: !!(${SHOWN}), marked: !!document.querySelector('[data-block="transcript"] li.flashed, ${CHIP}'), focused: !!document.activeElement?.closest('${BLOCK}'), scrolled: document.querySelector('.detail').scrollTop, search: location.search })`;
+async function awayAndClosed(y: number) {
+	await mouse(100, y);
+	await tab.until(`!(${SHOWN})`, 'the list closed with the mouse away');
+}
+
+test.skipIf(!CHROME)('1280px, coarse pointer with a mouse: a press without moving after the hover picks nothing, anywhere across the bar', async () => {
+	await visit(1280, undefined, 800, COARSE_WITH_MOUSE);
+	expect(await tab.eval(`matchMedia('(pointer: coarse)').matches`)).toBe(true);
+	const bar = await barBox();
+	expect(bar.right - bar.left).toBe(22);
+	const scrolled = await tab.eval<number>(`document.querySelector('.detail').scrollTop`);
+	const search = await tab.eval<string>('location.search');
+	const untouched = { closed: false, shown: true, marked: false, focused: false, scrolled, search };
+	let overRows = 0;
+	for (let x = Math.ceil(bar.left); x < bar.right; x++) {
+		await openedUnder(x, bar.y);
+		if (await tab.eval(`!!document.elementFromPoint(${x}, ${bar.y})?.closest('${ROWS}')`)) overRows++;
+		// Twice: the second press of a double click has not moved either.
+		await press(x, bar.y);
+		await press(x, bar.y);
+		await sleep(300);
+		expect({ x: x - bar.left, ...(await tab.eval<object>(PICKED)) }).toEqual({ x: x - bar.left, ...untouched });
+		if (x === Math.ceil(bar.left) + 2) await shot(tab, 'my-messages-1280-coarse-mouse-stationary-press');
+		await awayAndClosed(bar.y);
+	}
+	// Some of the places across the bar ended up on a row, or nothing here was at risk.
+	expect(overRows).toBeGreaterThan(0);
+	expect(tab.errors).toEqual([]);
+}, 90_000);
+
+test.skipIf(!CHROME)('1280px, coarse pointer with a mouse: once the mouse has moved, a click on a row picks it', async () => {
+	await visit(1280, undefined, 800, COARSE_WITH_MOUSE);
+	const bar = await barBox();
+	const strip = Math.ceil(bar.left) + 2;
+	const picks = async (x: number, y: number) => {
+		const seq = await tab.eval<number | null>(`Number(document.elementFromPoint(${x}, ${y})?.closest('${ROWS}')?.dataset.seq ?? NaN)`);
+		expect(seq).not.toBeNull();
+		await press(x, y);
+		await tab.until(`!(${SHOWN}) || window.__closed`, 'the list closed by the pick');
+		await tab.until(`${said(seq!)}?.classList.contains('flashed')`, 'the picked message marked', 20_000);
+	};
+	// Moved to another row.
+	await openedUnder(strip, bar.y);
+	await mouse(strip - 100, bar.y + 60);
+	await shot(tab, 'my-messages-1280-coarse-mouse-moved-to-row');
+	await picks(strip - 100, bar.y + 60);
+	await shot(tab, 'my-messages-1280-coarse-mouse-row-picked');
+	// Moved by a single pixel, after a press that picked nothing.
+	await awayAndClosed(bar.y);
+	await openedUnder(strip, bar.y);
+	await press(strip, bar.y);
+	await mouse(strip - 1, bar.y);
+	await picks(strip - 1, bar.y);
+	expect(tab.errors).toEqual([]);
+}, 90_000);
 
 test.skipIf(!CHROME)('1280px: a mouse click anywhere on the bar leaves the list open', async () => {
 	await visit(1280);
