@@ -1322,6 +1322,8 @@
 	/* Read out with the number, not seen. */
 	.sr-only {
 		position: absolute;
+		top: 0;
+		left: 0;
 		width: 1px;
 		height: 1px;
 		overflow: hidden;
@@ -1332,6 +1334,8 @@
 	.middle-tabs small.waiting,
 	.middle-switch small.waiting,
 	.middle-menu small.waiting {
+		/* Holds its read-out words, so they never reach past the row. */
+		position: relative;
 		background: var(--warn);
 		color: var(--bg);
 		font-weight: 700;

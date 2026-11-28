@@ -33,11 +33,11 @@ export function eventLines(view: EventTaskViewOf, timeZone: string): EventLines 
 	const handedOver = (state === 'running' || isEnded(state)) && last?.handoff.status === 'handed';
 	if (handedOver) return { mark, line: `${at.full(last.handoff.settledAt ?? last.startedAt)} ${attemptText(view, last.handoff)}`, last: null };
 	if (isEnded(state)) return { mark, line: `${at.full(view.event.ended?.at ?? view.event.deadlineAt)} 結束`, last: null };
-	// The deadline no longer counts for these (they keep and can be retried after it): when it went.
-	if ((state === 'failed' || state === 'unknown') && last) return { mark, line: `${at.full(last.handoff.settledAt ?? last.startedAt)} ${CAUSE_SHORT[last.handoff.event.cause]}，${attemptText(view, last.handoff)}`, last: null };
+	// 接手失敗 and 接手結果不明 keep, and can be retried, past the deadline: it is named, not as a limit.
+	const stuck = state === 'failed' || state === 'unknown';
 	return {
 		mark,
-		line: `最晚 ${at.full(view.event.deadlineAt)}`,
+		line: `${stuck ? '期限' : '最晚'} ${at.full(view.event.deadlineAt)}`,
 		last: last ? `上次 ${at.full(last.startedAt)} ${CAUSE_SHORT[last.handoff.event.cause]}，${attemptText(view, last.handoff)}` : null
 	};
 }

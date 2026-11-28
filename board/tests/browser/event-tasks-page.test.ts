@@ -82,6 +82,8 @@ test.skipIf(!CHROME)(
 		expect(await text(`.events [data-task="${failing}"]`)).toContain('接手失敗');
 		expect(await text(`.events [data-task="${failing}"]`)).toContain('一次性');
 		expect(await tab.eval(FITS)).toBe(true);
+		// The page never scrolls sideways, the count's read-out words included (QA, df767db2: 426px).
+		expect(await tab.eval(`(() => { window.scrollTo(100, 0); const moved = window.scrollX; window.scrollTo(0, 0); return [document.documentElement.scrollWidth, moved]; })()`)).toEqual([390, 0]);
 		await frames('events-390-list');
 
 		// 週期任務: today's page, with 新增任務 and only the periodic task; picked, it shows whole too.
