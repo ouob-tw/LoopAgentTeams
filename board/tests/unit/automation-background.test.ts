@@ -64,6 +64,9 @@ test('every task reported done (a notice may name several, a Monitor may expire)
 	}
 	const expired = notice(['bfr9tlkp7'], null, '[Monitor expired after 30m with no events delivered. Re-arm it if you still need the watch.]');
 	expect(backgroundGoesOn(record(...INCIDENT, given(notice(['bupmshgz0'], 'completed')), absorbed(expired), said('都結束了')))).toBe(false);
+	// One the agent stopped itself: TaskStop's result, with no notice after it.
+	const taskStop = line({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: '{"message":"Successfully stopped task: bupmshgz0"}' }] }, toolUseResult: { message: 'Successfully stopped task: bupmshgz0 (ssh sp1 clamscan)', task_id: 'bupmshgz0', task_type: 'local_bash' } });
+	expect(backgroundGoesOn(record(...INCIDENT, toolCall('TaskStop'), taskStop, given(notice(['bfr9tlkp7'], 'completed')), said('停掉了，沒寫結尾')))).toBe(false);
 	// A turn with no background work at all.
 	expect(backgroundGoesOn(record(toolCall('Bash'), line({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'ok' }] }, toolUseResult: { stdout: 'ok', stderr: '' } }), said('我做完了，但有點問題')))).toBe(false);
 });
