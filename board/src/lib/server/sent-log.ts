@@ -140,6 +140,8 @@ export interface AutomationTaskSave {
 	taskId: string;
 	taskName: string;
 	deviceId: string;
+	/** A task made from an approved 任務提案: the proposal; `deviceId` approved it. */
+	proposalId?: string;
 	unattended: (TaskUnattended & { maxHours: number }) | null;
 }
 

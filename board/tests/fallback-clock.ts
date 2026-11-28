@@ -32,7 +32,7 @@ spyOn(watchers, 'createSourceWatcher').mockReturnValue({ sync() {}, close() {} }
 spyOn(sources, 'helperDirectories').mockResolvedValue({ config: join(dir, 'config'), state: join(dir, 'helper-state') });
 spyOn(quota, 'createQuotaPoller').mockReturnValue({ current: () => null, close() {} });
 spyOn(pd, 'createPdPoller').mockReturnValue({ current: () => null, refresh: async () => {}, close() {} });
-spyOn(taskProposals, 'createTaskProposals').mockReturnValue({ pending: () => [], detail: () => null, submit: () => ({ ok: false, error: 'board', reason: '' }), withdraw: () => ({ ok: false, error: 'board', reason: '' }), sweep() {}, close() {} });
+spyOn(taskProposals, 'createTaskProposals').mockReturnValue({ pending: () => [], detail: () => null, submit: () => ({ ok: false, error: 'board', reason: '' }), withdraw: () => ({ ok: false, error: 'board', reason: '' }), challenge: async () => ({ status: 503, body: {} }), approve: async () => ({ status: 503, body: {} }), reject: () => ({ status: 503, body: {} }), sweep() {}, idle: async () => {}, close() {} });
 spyOn(hcom, 'listAgents').mockResolvedValue({ ok: true, agents: [{ name: 'missed', sessionId: 'session-missed', pane: null, status: 'listening' }] });
 spyOn(herdr, 'listHerdrAgents').mockResolvedValue({ ok: true, agents: [], workspaces: [], places: {} });
 spyOn(closed, 'createClosedRoster').mockReturnValue({

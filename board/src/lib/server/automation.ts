@@ -10,8 +10,8 @@
 // the run's record, `notify` hears of both for the yellow card and its push, and the answer the user
 // writes on the board is sent to the agent here (`reply`).
 import { spawn } from 'node:child_process';
-import { randomBytes, randomUUID } from 'node:crypto';
-import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { appendFileSync, closeSync, existsSync, fstatSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -52,9 +52,11 @@ import {
 	type RunTrigger,
 	dateOf,
 	grantHours,
+	type TaskSource,
 	type TaskUnattended,
 	type Weekday
 } from '../board/automation.ts';
+import type { Approval } from '../board/task-proposals.ts';
 import { SCOPE_KEYS, type UnattendedScope } from '../board/unattended.ts';
 import {
 	CONTROLLER_CONTINUE,
@@ -89,6 +91,8 @@ export type FieldErrors = Record<string, string>;
 
 export interface SavedBy {
 	deviceId: string;
+	/** A task made from an approved 任務提案: the proposal, beside the device that approved it. */
+	proposalId?: string;
 }
 
 /** `folderUntrusted`: an agent task whose client has not trusted its folder (#703); saved all the same. */
@@ -113,6 +117,12 @@ export interface Automation {
 	 *  unattended grant; an unattended task's runs start only from such a save. */
 	create(input: unknown, by?: SavedBy): Saved;
 	update(id: string, input: unknown, by?: SavedBy): Saved;
+	/** The task of an approved 任務提案 (#760), under the ID the approval fixed, made from the saved
+	 *  approval alone through the 新增任務 checks, its save logged as by the approving device. An
+	 *  agent task's brief becomes the board's own copy of the approved text. A task already under
+	 *  that ID is left as it is (`existed`). A failed check is a 400; a file that could not be
+	 *  written, a 500, which a later try may get past. */
+	createApproved(approval: Approval): { ok: true; task: AutomationTask; existed: boolean } | { ok: false; status: number; errors: FieldErrors };
 	setPaused(id: string, paused: boolean): AutomationTask | null;
 	/** 立即執行: refused while the same task runs. Resolves once the run has started, not ended. */
 	runNow(id: string): Started;
@@ -144,6 +154,23 @@ export function writeAtomic(path: string, text: string): void {
 	const temporary = `${path}.${process.pid}.${randomBytes(3).toString('hex')}.tmp`;
 	writeFileSync(temporary, text, { mode: 0o600 });
 	renameSync(temporary, path);
+}
+
+/** Write a whole file into place unless one is there already, by linking a finished temporary file
+ *  (which fails when the name is taken): of several writers, only the first counts. False when it
+ *  was not first. */
+export function writeFirst(path: string, text: string): boolean {
+	const temporary = `${path}.${process.pid}.${randomBytes(3).toString('hex')}.tmp`;
+	writeFileSync(temporary, text, { mode: 0o600 });
+	try {
+		linkSync(temporary, path);
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+		throw error;
+	} finally {
+		rmSync(temporary, { force: true });
+	}
 }
 
 /** `~` and `~/…` are the board user's home; anything else is taken as typed. */
@@ -314,8 +341,15 @@ function parseTask(raw: string, file: string, home: string): AutomationTask | st
 	for (const key of ['createdAt', 'updatedAt']) if (typeof value[key] !== 'string') return `少了 ${key}`;
 	const checked = validateTask(value, home, { paths: false });
 	if ('errors' in checked) return `欄位不對：${Object.keys(checked.errors).join('、')}`;
-	return { ...checked.task, id: value.id, paused: value.paused === true, createdAt: value.createdAt, updatedAt: value.updatedAt };
+	return { ...checked.task, id: value.id, paused: value.paused === true, createdAt: value.createdAt, updatedAt: value.updatedAt, ...(isSource(value.source) ? { source: value.source } : {}) };
 }
+
+const isSource = (value: any): value is TaskSource =>
+	value?.kind === 'proposal' &&
+	typeof value.proposalId === 'string' &&
+	typeof value.proposer?.name === 'string' &&
+	['approvedAt', 'proposedAt', 'deviceId', 'passkeyId'].every((key) => typeof value[key] === 'string') &&
+	(value.brief === undefined || ['path', 'from', 'sha256'].every((key) => typeof value.brief[key] === 'string'));
 
 /** The runs as the record says now: the lines of a run merged in order. A line that cannot be read
  *  (the end of one cut off by a crash) is left out. */
@@ -461,6 +495,9 @@ export function createAutomation(options: {
 		task.agent && trustOf(task.agent.client, expandHome(task.agent.folder, home)) === 'untrusted' ? true : undefined;
 	const runsDir = join(dir, 'runs');
 	const outputDir = join(dir, 'output');
+	/** Approved 任務提案 briefs, one per task: the text the user approved, which its runs read. */
+	const approvedDir = join(dir, 'approved');
+	const approvedBrief = (taskId: string) => join(approvedDir, `${taskId}.md`);
 	const missedDir = join(dir, 'missed');
 	/** When the scheduler last checked: periods that ended after it and by now are looked at for missed. */
 	const checkedFile = join(dir, 'checked-at.txt');
@@ -620,7 +657,16 @@ export function createAutomation(options: {
 	function logSave(task: AutomationTask, by: SavedBy | undefined): Saved | null {
 		if (!by) return null;
 		try {
-			appendSent(stateDir, { kind: 'automation-task-save', id: randomUUID(), time: new Date(now()).toISOString(), taskId: task.id, taskName: task.name, deviceId: by.deviceId, unattended: grantOf(task) });
+			appendSent(stateDir, {
+				kind: 'automation-task-save',
+				id: randomUUID(),
+				time: new Date(now()).toISOString(),
+				taskId: task.id,
+				taskName: task.name,
+				deviceId: by.deviceId,
+				...(by.proposalId ? { proposalId: by.proposalId } : {}),
+				unattended: grantOf(task)
+			});
 			return null;
 		} catch (error) {
 			return { ok: false, status: 500, errors: { task: `操作紀錄寫不進去，沒有儲存：${(error as Error).message}` } };
@@ -1280,6 +1326,16 @@ export function createAutomation(options: {
 
 	const savedAs = (task: AutomationTask): Saved => (folderUntrusted(task) ? { ok: true, task, folderUntrusted: true } : { ok: true, task });
 
+	/** An edited task's source: kept, but no longer with its approved brief once the brief path
+	 *  names another file (`dropped`: that copy, to remove once the edit is saved). */
+	function keptSource(source: TaskSource | undefined, task: AutomationTaskInput): { source?: TaskSource; dropped?: string } {
+		if (!source?.brief) return { source };
+		const agent = task.agent;
+		if (agent && resolve(expandHome(agent.folder, home), expandHome(agent.brief, home)) === source.brief.path) return { source };
+		const { brief, ...rest } = source;
+		return { source: rest, dropped: brief.path };
+	}
+
 	return {
 		snapshot,
 		create(input, by) {
@@ -1300,12 +1356,54 @@ export function createAutomation(options: {
 			if (!before) return { ok: false, status: 404, errors: { task: '這個任務已不存在' } };
 			const checked = validateTask(input, home);
 			if ('errors' in checked) return { ok: false, status: 400, errors: checked.errors };
-			const task: AutomationTask = { id, ...checked.task, paused: before.paused, createdAt: before.createdAt, updatedAt: new Date(now()).toISOString() };
+			const { source, dropped } = keptSource(before.source, checked.task);
+			const task: AutomationTask = { id, ...checked.task, paused: before.paused, createdAt: before.createdAt, updatedAt: new Date(now()).toISOString(), ...(source ? { source } : {}) };
 			const unlogged = logSave(task, by);
 			if (unlogged) return unlogged;
 			save(task);
+			if (dropped) rmSync(dropped, { force: true });
 			publish();
 			return savedAs(task);
+		},
+		createApproved(approval) {
+			const id = approval.taskId;
+			const existing = tasks.get(id);
+			if (existing) return { ok: true, task: existing, existed: true };
+			if (!ID.test(id)) return { ok: false, status: 400, errors: { task: '任務編號不對' } };
+			if (existsSync(taskFile(id))) return { ok: false, status: 409, errors: { task: '這個任務編號已有一個讀不出來的任務檔' } };
+			let input: AutomationTaskInput = approval.task;
+			let brief: TaskSource['brief'];
+			try {
+				if (approval.brief && input.agent) {
+					mkdirSync(approvedDir, { recursive: true, mode: 0o700 });
+					writeAtomic(approvedBrief(id), approval.brief.text);
+					brief = { path: approvedBrief(id), from: approval.brief.path, sha256: createHash('sha256').update(approval.brief.text).digest('hex') };
+					input = { ...input, agent: { ...input.agent, brief: brief.path } };
+				}
+			} catch (error) {
+				return { ok: false, status: 500, errors: { brief: `核准的說明檔寫不進看板：${(error as Error).message}` } };
+			}
+			const dropCopy = () => brief && rmSync(brief.path, { force: true });
+			const checked = validateTask(input, home);
+			if ('errors' in checked) {
+				dropCopy();
+				return { ok: false, status: 400, errors: checked.errors };
+			}
+			const at = new Date(now()).toISOString();
+			const task: AutomationTask = { id, ...checked.task, paused: false, createdAt: at, updatedAt: at, source: { ...approval.source, ...(brief ? { brief } : {}) } };
+			const unlogged = logSave(task, { deviceId: approval.source.deviceId, proposalId: approval.source.proposalId });
+			if (unlogged && !unlogged.ok) {
+				dropCopy();
+				return unlogged;
+			}
+			try {
+				save(task);
+			} catch (error) {
+				dropCopy();
+				return { ok: false, status: 500, errors: { task: `任務檔寫不進去：${(error as Error).message}` } };
+			}
+			publish();
+			return { ok: true, task, existed: false };
 		},
 		setPaused(id, paused) {
 			const before = tasks.get(id);
@@ -1377,7 +1475,7 @@ export function createAutomation(options: {
 			runs.delete(id);
 			missed.delete(id);
 			try {
-				for (const path of [runsFile(id), missedFile(id), join(outputDir, id), join(dir, 'review', id)]) rmSync(path, { recursive: true, force: true });
+				for (const path of [runsFile(id), missedFile(id), join(outputDir, id), join(dir, 'review', id), approvedBrief(id)]) rmSync(path, { recursive: true, force: true });
 			} finally {
 				// The pages hear the task is gone even when a record of it could not be removed.
 				publish();

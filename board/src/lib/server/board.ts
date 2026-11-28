@@ -367,7 +367,18 @@ function createBoard(): Board {
 		now: config.now,
 		acceptorCommand: config.proposalAcceptorCommand,
 		hcomCommand: config.hcomCommand,
-		latDir: config.latDir
+		hcomListTimeoutMs: config.hcomListTimeoutMs,
+		latDir: config.latDir,
+		stateDir: config.stateDir,
+		passkeySite: config.passkeySite,
+		// An approved proposal becomes a task through the automation's own checks and files.
+		createTask: (approval) => automation.createApproved(approval),
+		taskExists: (taskId) => automation.snapshot().tasks.some((entry) => entry.task.id === taskId),
+		damaged: (id) => {
+			push
+				.send({ title: '任務提案核准失敗', body: '核准紀錄損壞，沒有建立任務；請 Agent 重新提案', alert: `task-proposal-${id}` })
+				.catch((error) => log('ERROR', 'board.push', 'push_send_failed', { proposal_id: id, ...exceptionFields(error) }));
+		}
 	});
 
 	// Tells the board-ask hook a board runs: without it the hook leaves the client's own menu.

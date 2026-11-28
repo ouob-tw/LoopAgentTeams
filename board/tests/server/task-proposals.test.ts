@@ -4,125 +4,18 @@
 // the proposal in its folder and lists it through its logged-in API. Agents here are stand-in
 // processes named `claude` or `codex` that run the command as their child; hcom is the fake one.
 // Every folder, the socket and hcom are the fixture's own.
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, expect, test } from 'bun:test';
-import { DAY, logged, runCli, startFixture, until, uvPython, type CliResult, type Fixture } from '../harness.ts';
-
-const CLI = join(import.meta.dir, '../../../skills/local/task-proposal/scripts/task-proposal.py');
-const LAT_DIR = join(import.meta.dir, '../../../skills/local/lat');
+import { DAY, logged, until, type Fixture } from '../harness.ts';
+import { agentFolder, asAgent, commandTask, filesIn, listed, parsed, proposalsDir, stored, submit, agentTask, withAgents as startWithAgents, type AgentDouble } from '../task-proposal-fixture.ts';
 
 let fixture: Fixture | undefined;
 afterEach(async () => {
 	await fixture?.cleanup();
 	fixture = undefined;
 });
-
-interface AgentDouble {
-	client: 'claude' | 'codex';
-	/** HCOM_INSTANCE_NAME: the base name, as hcom sets it. */
-	name: string;
-	processId: string;
-	folder: string;
-}
-
-/** An agent as hcom lists it. */
-const listed = (agent: AgentDouble, overrides: Record<string, unknown> = {}) => ({
-	name: `grp-${agent.name}`,
-	base_name: agent.name,
-	tag: 'grp',
-	tool: agent.client,
-	status: 'active',
-	session_id: `session-${agent.name}`,
-	directory: agent.folder,
-	launch_context: { process_id: agent.processId },
-	...overrides
-});
-
-/** A folder of its own for each agent, outside any git checkout. */
-function agentFolder(board: Fixture, name: string): string {
-	const folder = join(board.dir, 'workspaces', name);
-	mkdirSync(join(folder, '.lat/sessions'), { recursive: true });
-	return folder;
-}
-
-/** The stand-in client: a shell named `claude` or `codex` that runs its arguments as a child and
- *  stays their parent. With PROPOSAL_GATE set it writes its PID to `<gate>.pid` and waits for `<gate>`. */
-function clientBinary(board: Fixture, client: 'claude' | 'codex'): string {
-	const bin = join(board.dir, 'agent-bin');
-	mkdirSync(bin, { recursive: true });
-	const path = join(bin, client);
-	if (!existsSync(path)) {
-		writeFileSync(path, '#!/bin/sh\nif [ -n "$PROPOSAL_GATE" ]; then echo $$ > "$PROPOSAL_GATE.pid"; while [ ! -e "$PROPOSAL_GATE" ]; do sleep 0.05; done; fi\n"$@"\n');
-		chmodSync(path, 0o755);
-	}
-	return path;
-}
-
-/** The command's environment: the fixture's folder and socket, and the agent's HCOM identity. */
-function commandEnv(board: Fixture, agent?: AgentDouble, extra: Record<string, string> = {}) {
-	const server = board.serverEnv();
-	return {
-		PATH: process.env.PATH ?? '',
-		HOME: server.HOME,
-		LAT_BOARD_PROPOSALS_DIR: server.LAT_BOARD_PROPOSALS_DIR,
-		LAT_BOARD_PROPOSAL_SOCKET: server.LAT_BOARD_PROPOSAL_SOCKET,
-		...(agent ? { HCOM_INSTANCE_NAME: agent.name, HCOM_TOOL: agent.client, HCOM_PROCESS_ID: agent.processId } : {}),
-		...extra
-	};
-}
-
-/** Run the command as the agent's child; without an agent, orphaned first, so no claude or codex
- *  process (such as the one running these tests) is above it. */
-function asAgent(board: Fixture, agent: AgentDouble | null, args: string[], options: { input?: string; env?: Record<string, string> } = {}): Promise<CliResult> {
-	const command = [uvPython(), CLI, ...args];
-	const env = commandEnv(board, agent ?? undefined, options.env);
-	if (!agent) return runCli('/bin/sh', ['-c', '( "$@" & )', 'orphan', ...command], { env, input: options.input });
-	return runCli('/bin/sh', ['-c', 'cd "$0" && exec "$@"', agent.folder, clientBinary(board, agent.client), ...command], { env, input: options.input });
-}
-
-const commandTask = (folder: string, overrides: Record<string, unknown> = {}) => ({
-	name: '每天備份筆記',
-	schedule: { type: 'daily' },
-	time: '09:30',
-	limitMinutes: 30,
-	kind: 'command',
-	command: { command: 'echo backed-up', folder, checks: [] },
-	...overrides
-});
-
-const agentTask = (folder: string) => ({
-	name: '每週整理 issue',
-	schedule: { type: 'weekly', fromWeekday: 1, toWeekday: 5 },
-	time: '10:00',
-	limitMinutes: 60,
-	kind: 'agent',
-	agent: { client: 'codex', model: 'gpt-6.1-sol', effort: 'medium', folder, brief: 'brief.md' }
-});
-
-/** Send `task`; from a file when there is no agent, as an orphaned command has no standard input. */
-function submit(board: Fixture, agent: AgentDouble | null, task: unknown, env?: Record<string, string>) {
-	if (agent) return asAgent(board, agent, ['--json', 'submit'], { input: JSON.stringify(task), env });
-	const file = join(board.dir, 'proposal.json');
-	writeFileSync(file, JSON.stringify(task));
-	return asAgent(board, null, ['--json', 'submit', file], { env });
-}
-const parsed = (result: CliResult) => JSON.parse(result.stdout);
-
-const proposalsDir = (board: Fixture) => board.serverEnv().LAT_BOARD_PROPOSALS_DIR;
-const filesIn = (board: Fixture) => (existsSync(proposalsDir(board)) ? readdirSync(proposalsDir(board)).sort() : []);
-const stored = (board: Fixture, id: string) => JSON.parse(readFileSync(join(proposalsDir(board), `${id}.json`), 'utf8'));
-
-/** A fixture whose fake hcom lists these agents; each gets its folder. */
-async function withAgents(names: { name: string; client: 'claude' | 'codex' }[], options: Parameters<typeof startFixture>[0] = {}) {
-	// The acceptor reads LAT's session records by this repo's own LAT rules.
-	fixture = await startFixture({ ...options, env: { LAT_BOARD_LAT_DIR: LAT_DIR, ...options.env } });
-	const board = fixture;
-	const agents = names.map(({ name, client }) => ({ name, client, processId: `process-${name}`, folder: agentFolder(board, name) }));
-	board.setHcom({ agents: agents.map((agent) => listed(agent)) });
-	await until(() => logged(board.serverOutput(), 'proposal_acceptor_ready').length > 0, 10_000, 'the acceptor to listen');
-	return { board, agents };
-}
+const withAgents = (names: Parameters<typeof startWithAgents>[0], options?: Parameters<typeof startWithAgents>[1]) => startWithAgents(names, options, (board) => (fixture = board));
 
 test('an agent submits a proposal: the board keeps its verified sender and the brief in full, and lists it to a logged-in device', async () => {
 	const { board, agents } = await withAgents([{ name: 'luna', client: 'codex' }]);
@@ -287,13 +180,13 @@ test('only the agent that sent a proposal can withdraw it, and only one result e
 	expect(both.map(parsed).find((reply) => !reply.ok)).toMatchObject({ error: 'ended', status: 'withdrawn' });
 	expect((await asAgent(board, luna, ['status', first])).stdout.trim()).toBe(`已撤回：${first}`);
 
-	// Another result got there first (#760's 核准中, written the same way): the withdrawal loses.
-	const approving = { version: 1, id: second, status: 'approving', at: new Date().toISOString() };
-	writeFileSync(join(proposalsDir(board), `${second}.result.json`), JSON.stringify(approving));
+	// Another result got there first (a rejection, linked the same way): the withdrawal loses.
+	const rejected = { version: 1, id: second, status: 'rejected', at: new Date().toISOString() };
+	writeFileSync(join(proposalsDir(board), `${second}.result.json`), JSON.stringify(rejected));
 	const late = await asAgent(board, luna, ['withdraw', second]);
 	expect(late.code).toBe(1);
-	expect(late.stdout.trim()).toBe('這個提案已經有結果：核准中');
-	expect(JSON.parse(readFileSync(join(proposalsDir(board), `${second}.result.json`), 'utf8'))).toEqual(approving);
+	expect(late.stdout.trim()).toBe('這個提案已經有結果：已拒絕');
+	expect(JSON.parse(readFileSync(join(proposalsDir(board), `${second}.result.json`), 'utf8'))).toEqual(rejected);
 
 	const cookie = await board.login();
 	expect((await (await board.fetch('/api/task-proposals', { cookie })).json()).proposals).toEqual([]);
@@ -315,10 +208,10 @@ test('an unanswered proposal expires after 24 hours, and an ended one goes with 
 	expect((await asAgent(board, luna, ['status', kept])).stdout.trim()).toBe(`已過期：${kept}`);
 	expect(logged(board.serverOutput(), 'task_proposal_expired')).toMatchObject([{ proposal_id: kept }]);
 
-	// The withdrawal ended at the start, the expiry a day later.
+	// The withdrawal ended at the start, the expiry a day later; the expiry's message record goes with it.
 	board.setClock(start + 7 * DAY + 60_000);
 	await board.fetch('/api/task-proposals', { cookie });
-	expect(filesIn(board)).toEqual([`${kept}.json`, `${kept}.result.json`]);
+	expect(filesIn(board)).toEqual([`${kept}.json`, `${kept}.notify.json`, `${kept}.result.json`]);
 	board.setClock(start + 8 * DAY);
 	await board.fetch('/api/task-proposals', { cookie });
 	expect(filesIn(board)).toEqual([]);

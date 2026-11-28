@@ -17,6 +17,8 @@ export type AuthEvent =
 	| 'passkey_enroll'
 	| 'passkey_delete'
 	| 'demo_share_confirm'
+	| 'task_proposal_challenge'
+	| 'task_proposal_approve'
 	| 'logout';
 
 type AuthResult = 'start' | 'success' | 'failure';

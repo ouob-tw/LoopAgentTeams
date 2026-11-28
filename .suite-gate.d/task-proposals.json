@@ -6,20 +6,76 @@
         "board/src/lib/server/task-proposals.ts",
         "board/src/lib/board/task-proposals.ts",
         "board/src/routes/api/task-proposals/**",
+        "board/tests/task-proposal-fixture.ts",
         "skills/local/task-proposal/**"
       ],
       "tests": [
         "board/tests/server/task-proposals.test.ts",
-        "board/tests/unit/task-proposal-cli.test.ts"
+        "board/tests/server/task-proposal-approval.test.ts",
+        "board/tests/unit/task-proposal-cli.test.ts",
+        "board/tests/unit/task-proposal-race.test.ts"
       ]
     },
     {
-      "paths": ["board/src/lib/server/automation.ts"],
-      "tests": ["board/tests/server/task-proposals.test.ts"]
+      "paths": [
+        "board/src/lib/server/task-proposal-approval.ts",
+        "board/src/lib/server/task-proposal-notify.ts",
+        "board/src/lib/server/webauthn.ts",
+        "board/src/lib/server/passkeys.ts",
+        "board/tests/fake-hcom.mjs",
+        "board/tests/push-keys.ts"
+      ],
+      "tests": [
+        "board/tests/server/task-proposal-approval.test.ts",
+        "board/tests/unit/task-proposal-approval.test.ts"
+      ]
     },
     {
-      "paths": ["board/src/lib/server/task-proposals.ts"],
-      "tests": ["board/tests/unit/log.test.ts", "board/tests/unit/test-state-guard.test.ts"]
+      "paths": [
+        "board/src/lib/server/automation.ts",
+        "board/src/lib/board/automation.ts",
+        "board/src/lib/server/sent-log.ts"
+      ],
+      "tests": [
+        "board/tests/server/task-proposals.test.ts",
+        "board/tests/server/task-proposal-approval.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/src/lib/server/test-device.ts"
+      ],
+      "tests": [
+        "board/tests/server/task-proposal-approval.test.ts",
+        "board/tests/server/test-login.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/src/lib/server/task-proposals.ts",
+        "board/tests/fallback-clock.ts"
+      ],
+      "tests": [
+        "board/tests/unit/log.test.ts",
+        "board/tests/unit/test-state-guard.test.ts",
+        "board/tests/server/fallback.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/tests/push-keys.ts"
+      ],
+      "tests": [
+        "board/tests/server/automation-alerts.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/tests/unit/proposal-link-race.ts"
+      ],
+      "tests": [
+        "board/tests/unit/task-proposal-race.test.ts"
+      ]
     }
   ]
 }

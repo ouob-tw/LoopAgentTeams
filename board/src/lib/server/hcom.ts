@@ -157,7 +157,7 @@ export function findAgent(agents: HcomAgent[], sessionId: string, names: (string
 export type AgentList = { ok: true; agents: HcomAgent[] } | { ok: false; reason: string };
 
 /** hcom's list of agents. Whether a client is still running is told by its session ID in it. */
-export async function listAgents(config: BoardConfig): Promise<AgentList> {
+export async function listAgents(config: Pick<BoardConfig, 'hcomCommand' | 'hcomListTimeoutMs'>): Promise<AgentList> {
 	const run = await runCommand(config.hcomCommand, ['list', '--json'], { timeoutMs: config.hcomListTimeoutMs });
 	if (run.failure) return { ok: false, reason: `hcom 的 Agent 清單讀不到：${run.failure}` };
 	const read = parseJsonOutput<unknown>(run, 'hcom 的 Agent 清單不是預期的 JSON');

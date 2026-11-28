@@ -123,7 +123,7 @@ beforeAll(() => {
 		process.env[name] = value;
 	}
 	// No acceptor: its start would write log lines into the ones these tests read.
-	spyOn(taskProposals, 'createTaskProposals').mockReturnValue({ pending: () => [], detail: () => null, submit: () => ({ ok: false, error: 'board', reason: '' }), withdraw: () => ({ ok: false, error: 'board', reason: '' }), sweep() {}, close() {} });
+	spyOn(taskProposals, 'createTaskProposals').mockReturnValue({ pending: () => [], detail: () => null, submit: () => ({ ok: false, error: 'board', reason: '' }), withdraw: () => ({ ok: false, error: 'board', reason: '' }), challenge: async () => ({ status: 503, body: {} }), approve: async () => ({ status: 503, body: {} }), reject: () => ({ status: 503, body: {} }), sweep() {}, idle: async () => {}, close() {} });
 });
 
 afterAll(() => {
