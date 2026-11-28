@@ -69,6 +69,10 @@ export function isDemoAddress(rest: string): boolean {
 	return demoName(rest) !== null;
 }
 
+/** What follows `/demo/` in a board address's path, still percent-encoded, as the demo route and
+ *  the login check (hooks.server.ts) both read it. */
+export const demoRest = (pathname: string) => pathname.replace(/^\/demo\/?/, '');
+
 /** The demo `rest` (as the address has it) is inside, or null when it names none or could reach
  *  outside its folder. */
 export function demoName(rest: string): string | null {
@@ -77,6 +81,22 @@ export function demoName(rest: string): string | null {
 }
 
 export const isDemoName = (value: unknown): value is string => typeof value === 'string' && NAME.test(value);
+
+/** Which folder the demo `name` is right now, as `<device>:<inode>:<created>`: `demo.py publish`
+ *  puts a new folder in place each time, so a page published again, or another page under a reused
+ *  name, is a different folder. Null when it is not a published demo. */
+export function demoFolderId(siteDir: string, name: string): string | null {
+	if (!NAME.test(name)) return null;
+	try {
+		const root = realpathSync(siteDir);
+		const own = realpathSync(join(root, name));
+		const stat = statSync(own);
+		if (!own.startsWith(root + sep) || !stat.isDirectory()) return null;
+		return `${stat.dev}:${stat.ino}:${stat.birthtimeMs || stat.ctimeMs}`;
+	} catch {
+		return null;
+	}
+}
 
 /** The published demos: each folder of the site directory a demo address can name, newest change
  *  first. None when the directory cannot be read. */

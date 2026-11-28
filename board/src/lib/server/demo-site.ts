@@ -127,7 +127,7 @@ export async function answerDemoAddress(config: BoardConfig, event: RequestEvent
 	if (path === LOGIN_PATH) return trade(config, event);
 	const rest = path.slice(1);
 	if (!isDemoAddress(rest)) return text('not found', 404);
-	if (isSharedDemo(config.stateDir, rest) || loggedIn(config, event.cookies.get(DEMO_LOGIN_COOKIE))) return serveDemo(config.demoSiteDir, rest, event.url.search, '/');
+	if (isSharedDemo(config.stateDir, config.demoSiteDir, rest) || loggedIn(config, event.cookies.get(DEMO_LOGIN_COOKIE))) return serveDemo(config.demoSiteDir, rest, event.url.search, '/');
 	// The board's address is set whenever the demo address is (config.ts).
 	const { state, cookie } = newState(event);
 	const to = encodeURIComponent(path + event.url.search);

@@ -4,12 +4,14 @@ import type { Handle, HandleServerError, ServerInit } from '@sveltejs/kit/hooks'
 import { randomUUID } from 'node:crypto';
 import { DEVICE_COOKIE } from '#lib/server/auth.ts';
 import { getBoard } from '#lib/server/board.ts';
+import type { BoardConfig } from '#lib/server/config.ts';
 import { actingAs } from '#lib/server/acting.ts';
 import { clientAddress, viaHttps } from '#lib/server/client-address.ts';
 import { findDevice, markSeen, saveSeen } from '#lib/server/devices.ts';
 import { isDemoPath, securityHeaders, type DemoAnswer } from '#lib/server/security-headers.ts';
 import { answerDemoAddress } from '#lib/server/demo-site.ts';
 import { isSharedDemo } from '#lib/server/demo-share.ts';
+import { demoRest } from '#lib/server/demo.ts';
 import { DEMO_MARK } from '#lib/server/demo-address.ts';
 import { testDeviceRefusal } from '#lib/server/test-device.ts';
 import { exceptionFields, log, withRequestId } from '#lib/server/log.ts';
@@ -100,11 +102,13 @@ const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /** A file of a shared demo read on the board's own /demo (demo-share.ts): it needs no login. Only
  *  GET and HEAD of the demo route itself, under that demo's folder; everything else still does. The
- *  address is read as sent, as the route reads it. */
-const sharedDemoRead = (event: RequestEvent, stateDir: string) =>
+ *  address is read as sent, as the route reads it (demoRest). The route id is trusted as the path's
+ *  own: SvelteKit remote functions (`.remote.ts`) take theirs from a request header, so adding any
+ *  would need this check redone. */
+const sharedDemoRead = (event: RequestEvent, config: BoardConfig) =>
 	(event.request.method === 'GET' || event.request.method === 'HEAD') &&
 	event.route.id === '/demo/[...path]' &&
-	isSharedDemo(stateDir, event.url.pathname.replace(/^\/demo\/?/, ''));
+	isSharedDemo(config.stateDir, config.demoSiteDir, demoRest(event.url.pathname));
 
 const seeOther = (location: string) => new Response(null, { status: 303, headers: { location } });
 
@@ -200,7 +204,7 @@ const handleAllowed: Handle = ({ event, resolve }) => {
 			event.locals.device = device;
 
 			const path = event.url.pathname;
-			if (!device && !OPEN_PATHS.has(path) && !sharedDemoRead(event, board.config.stateDir)) {
+			if (!device && !OPEN_PATHS.has(path) && !sharedDemoRead(event, board.config)) {
 				if (path.startsWith('/api/')) return json({ error: 'unpaired' }, { status: 401 });
 				if (openedFromOutside(event.request)) return reloadFromHere();
 				return seeOther('/login');
