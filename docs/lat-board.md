@@ -152,7 +152,7 @@ bun run board test-login --hours 4 --label qa-498 --url http://<主機>:7100
 範例檔 [board/lat-board.service](../board/lat-board.service) 是 systemd 使用者服務，登出與重開機後都會自動恢復。
 
 1. 先確認 `bun run build` 已完成，並用 `command -v node uv hcom herdr git` 查出這些指令所在的目錄（只有 Bun 的主機把 `node` 換成 `bun`，並把範例檔的 `ExecStart` 改成 `/usr/bin/env bun build/index.js`）。
-2. 複製範例檔並把 `<...>` 換成實際值：`WorkingDirectory` 填專案裡的 `board` 目錄；`PATH` 要含上面查到的目錄，因為服務的 PATH 很短，找不到 `uv` 或 `hcom` 時，待決題與傳話會失敗；找不到 `hcom`、`herdr` 或 `git` 時，新建主控會失敗。Herdr 的 socket 不在預設位置時，另外加一行 `Environment=HERDR_SOCKET_PATH=<socket 路徑>`（在 Herdr 分頁裡執行 `echo $HERDR_SOCKET_PATH` 可以查到）。
+2. 複製範例檔並把 `<...>` 換成實際值：`WorkingDirectory` 填專案裡的 `board` 目錄；`PATH` 要含上面查到的目錄，因為服務的 PATH 很短，找不到 `uv` 或 `hcom` 時，待決題與傳話會失敗，Agent 也送不出任務提案；找不到 `hcom`、`herdr` 或 `git` 時，新建主控會失敗。Herdr 的 socket 不在預設位置時，另外加一行 `Environment=HERDR_SOCKET_PATH=<socket 路徑>`（在 Herdr 分頁裡執行 `echo $HERDR_SOCKET_PATH` 可以查到）。
 
    ```bash
    mkdir -p ~/.config/systemd/user

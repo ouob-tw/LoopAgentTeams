@@ -1,7 +1,7 @@
 // Board settings, read from the environment. No SvelteKit imports: the host command uses this too.
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { parseModelOptions, type ModelOptions } from '../board/models.ts';
 import { ASK_EXECUTION_WAIT_MS } from '../board/board-asks.ts';
 import { connectionSettings, type AddressList } from './client-address.ts';
@@ -280,6 +280,22 @@ function helperCommand(env: Env): string[] {
 	return ['uv', 'run', '--no-project', 'python', join(latDir, 'herdr-panel/lat_panel.py')];
 }
 
+/** `hooks/task-proposal-acceptor.py` of the board folder: next to the build the server runs
+ *  (`<board>/build/index.js`), whatever folder it was started from; the working folder's own
+ *  `hooks/` otherwise (`vite dev`). */
+function acceptorScript(): string {
+	const script = 'hooks/task-proposal-acceptor.py';
+	try {
+		// `node build` names the folder, `node build/index.js` the file.
+		const entry = resolve(process.argv[1]);
+		const besideBuild = join(statSync(entry).isDirectory() ? entry : dirname(entry), '..', script);
+		if (existsSync(besideBuild)) return besideBuild;
+	} catch {
+		// No script path, or one that is gone: the working folder's.
+	}
+	return resolve(script);
+}
+
 /** The real clock, or for tests the time written in the file `LAT_BOARD_CLOCK_FILE` names. */
 function clock(env: Env): () => number {
 	const file = env.LAT_BOARD_CLOCK_FILE;
@@ -339,7 +355,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		proposalsDir,
 		// Inside the folder, which only the board's account can enter.
 		proposalSocket: env.LAT_BOARD_PROPOSAL_SOCKET && isAbsolute(env.LAT_BOARD_PROPOSAL_SOCKET) ? env.LAT_BOARD_PROPOSAL_SOCKET : join(proposalsDir, 'board.sock'),
-		proposalAcceptorCommand: commandFrom(env, 'LAT_BOARD_PROPOSAL_ACCEPTOR_COMMAND') ?? ['uv', 'run', '--no-project', 'python', resolve('hooks/task-proposal-acceptor.py')],
+		proposalAcceptorCommand: commandFrom(env, 'LAT_BOARD_PROPOSAL_ACCEPTOR_COMMAND') ?? ['uv', 'run', '--no-project', 'python', acceptorScript()],
 		askExecutionWaitMs: seconds(env.LAT_BOARD_ASK_EXECUTION_WAIT_SECONDS, ASK_EXECUTION_WAIT_MS),
 		// A Codex agent runs one short turn to reconnect.
 		unpauseWaitMs: seconds(env.LAT_BOARD_UNPAUSE_WAIT_SECONDS, 60_000),

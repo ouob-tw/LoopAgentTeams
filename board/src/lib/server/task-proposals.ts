@@ -31,6 +31,7 @@ import {
 	type ResultStatus
 } from '../board/task-proposals.ts';
 import { expandHome, validateTask, writeAtomic } from './automation.ts';
+import { ownEnv } from './hcom.ts';
 import { exceptionFields, log } from './log.ts';
 
 /** The largest brief a proposal may carry in full. */
@@ -42,9 +43,12 @@ const RESTART_WAITS_MS = [500, 1_000, 2_000, 5_000, 10_000, 30_000];
 /** An acceptor that ran this long counts as having started well: the next restart waits the least. */
 const STARTED_WELL_MS = 60_000;
 
+/** Why a request was not taken; the acceptor itself adds `refused` (sender not verified) and
+ *  `board-timeout` (no reply in 30 s). */
+export type RefusalCode = 'bad-request' | 'not-found' | 'not-yours' | 'ended' | 'board';
 export type AcceptorReply =
 	| { ok: true; id: string; status: 'pending' | 'invalid' | 'withdrawn'; errors?: Record<string, string> }
-	| { ok: false; error: string; reason: string; status?: string };
+	| { ok: false; error: RefusalCode; reason: string; status?: string };
 
 export interface TaskProposals {
 	/** The waiting proposals, oldest first; expires and clears what is due first. */
@@ -138,8 +142,8 @@ export function createProposalStore(options: { dir: string; now(): number; home?
 		}
 		const found = new Set<string>();
 		for (const name of names) {
-			const match = /^([a-f0-9]{12})(?:\.result)?\.json$/.exec(name);
-			if (match) found.add(match[1]);
+			const id = name.replace(/(?:\.result)?\.json$/, '');
+			if (id !== name && PROPOSAL_ID.test(id)) found.add(id);
 		}
 		return [...found].sort();
 	}
@@ -214,11 +218,16 @@ export function createProposalStore(options: { dir: string; now(): number; home?
 		}
 	}
 
-	function pendingOf(id: string, proposal: { file: ProposalFile; hash: string }): PendingProposal | null {
-		const { file, hash } = proposal;
-		if (!file.task) return null;
-		return { id, createdAt: file.createdAt, expiresAt: file.expiresAt, proposer: file.proposer, task: file.task, brief: file.brief, contentHash: hash };
-	}
+	/** What the API shows of a proposal file. */
+	const shownOf = (id: string, { file, hash }: { file: ProposalFile; hash: string }) => ({
+		id,
+		createdAt: file.createdAt,
+		expiresAt: file.expiresAt,
+		proposer: file.proposer,
+		task: file.task,
+		brief: file.brief,
+		contentHash: hash
+	});
 
 	return {
 		pending(): PendingProposal[] {
@@ -227,8 +236,8 @@ export function createProposalStore(options: { dir: string; now(): number; home?
 			for (const id of ids()) {
 				if (readResult(id)) continue;
 				const proposal = readProposal(id);
-				const shown = proposal && pendingOf(id, proposal);
-				if (shown) list.push(shown);
+				const shown = proposal && shownOf(id, proposal);
+				if (shown?.task) list.push({ ...shown, task: shown.task });
 			}
 			return list.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 		},
@@ -236,19 +245,8 @@ export function createProposalStore(options: { dir: string; now(): number; home?
 			sweep();
 			const proposal = readProposal(id);
 			if (!proposal) return null;
-			const { file, hash } = proposal;
 			const result = readResult(id);
-			return {
-				id,
-				createdAt: file.createdAt,
-				expiresAt: file.expiresAt,
-				proposer: file.proposer,
-				task: file.task,
-				brief: file.brief,
-				contentHash: hash,
-				status: result?.status ?? 'pending',
-				result
-			};
+			return { ...shownOf(id, proposal), status: result?.status ?? 'pending', result };
 		},
 		submit(proposer: Proposer, input: unknown): AcceptorReply {
 			if (!isProposer(proposer)) return { ok: false, error: 'bad-request', reason: '看板沒收到查證過的提案者' };
@@ -293,7 +291,8 @@ export function createProposalStore(options: { dir: string; now(): number; home?
 			const proposal = readProposal(id);
 			if (!proposal) return { ok: false, error: 'not-found', reason: '找不到這個提案' };
 			const owner = proposal.file.proposer;
-			if (owner.name !== proposer.name || owner.client !== proposer.client) {
+			// The same agent process as hcom knows it: a later agent given the same name is another one.
+			if (owner.name !== proposer.name || owner.client !== proposer.client || owner.processId !== proposer.processId) {
 				log('WARNING', 'board.proposals', 'task_proposal_withdraw_refused', { proposal_id: id, proposer: proposer.name, owner: owner.name });
 				return { ok: false, error: 'not-yours', reason: '只有提出這個提案的 Agent 能撤回它' };
 			}
@@ -320,6 +319,8 @@ export function createTaskProposals(options: {
 	acceptorCommand: string[];
 	/** What the acceptor lists agents with: hcom, or the tests' fake. */
 	hcomCommand: string[];
+	/** The LAT skill folder, whose `scripts/_lat_common.py` the acceptor reads LAT's session records by. */
+	latDir: string;
 	sweepMs?: number;
 }): TaskProposals {
 	const store = createProposalStore(options);
@@ -328,7 +329,8 @@ export function createTaskProposals(options: {
 	let restarts = 0;
 	let restartTimer: ReturnType<typeof setTimeout> | undefined;
 
-	function answer(request: any): AcceptorReply {
+	/** The board's reply to one verified request from the acceptor. */
+	function replyTo(request: any): AcceptorReply {
 		try {
 			if (request.op === 'submit') return store.submit(request.proposer, request.proposal);
 			if (request.op === 'withdraw') return store.withdraw(request.proposer, request.id);
@@ -343,7 +345,8 @@ export function createTaskProposals(options: {
 		const [command, ...args] = options.acceptorCommand;
 		const startedAt = Date.now();
 		const started = spawn(command, [...args, options.socket], {
-			env: { ...process.env, LAT_PROPOSAL_HCOM_COMMAND: JSON.stringify(options.hcomCommand) },
+			// The board's own environment, not that of an agent whose shell may have started it.
+			env: { ...ownEnv(), LAT_PROPOSAL_HCOM_COMMAND: JSON.stringify(options.hcomCommand), LAT_PROPOSAL_LAT_DIR: options.latDir },
 			stdio: ['pipe', 'pipe', 'pipe']
 		});
 		child = started;
@@ -359,7 +362,7 @@ export function createTaskProposals(options: {
 			}
 			if (request?.event === 'ready') log('INFO', 'board.proposals', 'proposal_acceptor_ready', { pid: request.pid });
 			else if (request?.event === 'refused') log('WARNING', 'board.proposals', 'task_proposal_refused', { reason: request.reason, peer_pid: request.peer_pid });
-			else if (Number.isInteger(request?.seq) && !started.stdin!.destroyed) started.stdin!.write(JSON.stringify({ seq: request.seq, reply: answer(request) }) + '\n');
+			else if (Number.isInteger(request?.seq) && !started.stdin!.destroyed) started.stdin!.write(JSON.stringify({ seq: request.seq, reply: replyTo(request) }) + '\n');
 		});
 		createInterface({ input: started.stderr! }).on('line', (line) => log('WARNING', 'board.proposals', 'proposal_acceptor_stderr', { line: line.slice(0, 2000) }));
 		started.on('error', (error) => log('ERROR', 'board.proposals', 'proposal_acceptor_unstarted', exceptionFields(error)));
@@ -399,6 +402,7 @@ export function createTaskProposals(options: {
 			closed = true;
 			clearTimeout(restartTimer);
 			clearInterval(sweeper);
+			process.off('exit', stopChild);
 			// Its standard input closing ends it, and it removes the socket.
 			child?.stdin?.end();
 		}

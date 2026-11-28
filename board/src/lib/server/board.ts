@@ -366,7 +366,8 @@ function createBoard(): Board {
 		socket: config.proposalSocket,
 		now: config.now,
 		acceptorCommand: config.proposalAcceptorCommand,
-		hcomCommand: config.hcomCommand
+		hcomCommand: config.hcomCommand,
+		latDir: config.latDir
 	});
 
 	// Tells the board-ask hook a board runs: without it the hook leaves the client's own menu.

@@ -10,6 +10,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { DAY, logged, runCli, startFixture, until, uvPython, type CliResult, type Fixture } from '../harness.ts';
 
 const CLI = join(import.meta.dir, '../../../skills/local/task-proposal/scripts/task-proposal.py');
+const LAT_DIR = join(import.meta.dir, '../../../skills/local/lat');
 
 let fixture: Fixture | undefined;
 afterEach(async () => {
@@ -114,7 +115,8 @@ const stored = (board: Fixture, id: string) => JSON.parse(readFileSync(join(prop
 
 /** A fixture whose fake hcom lists these agents; each gets its folder. */
 async function withAgents(names: { name: string; client: 'claude' | 'codex' }[], options: Parameters<typeof startFixture>[0] = {}) {
-	fixture = await startFixture(options);
+	// The acceptor reads LAT's session records by this repo's own LAT rules.
+	fixture = await startFixture({ ...options, env: { LAT_BOARD_LAT_DIR: LAT_DIR, ...options.env } });
 	const board = fixture;
 	const agents = names.map(({ name, client }) => ({ name, client, processId: `process-${name}`, folder: agentFolder(board, name) }));
 	board.setHcom({ agents: agents.map((agent) => listed(agent)) });
@@ -264,6 +266,11 @@ test('only the agent that sent a proposal can withdraw it, and only one result e
 	const foreign = await asAgent(board, nova, ['--json', 'withdraw', first]);
 	expect(foreign.code).toBe(1);
 	expect(parsed(foreign)).toMatchObject({ ok: false, error: 'not-yours' });
+	// A later agent that hcom gave the same name is not the one that sent it.
+	board.setHcom({ agents: [listed(luna, { launch_context: { process_id: 'process-luna-later' } }), listed(nova)] });
+	const namesake = await asAgent(board, { ...luna, processId: 'process-luna-later' }, ['--json', 'withdraw', first]);
+	expect(parsed(namesake)).toMatchObject({ ok: false, error: 'not-yours' });
+	board.setHcom({ agents: [listed(luna), listed(nova)] });
 	expect(existsSync(join(proposalsDir(board), `${first}.result.json`))).toBe(false);
 
 	// Two withdrawals at once: one takes the result, the other finds it taken.

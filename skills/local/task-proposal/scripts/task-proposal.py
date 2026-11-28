@@ -40,6 +40,8 @@ LABELS = dict(pending='等待中', invalid='無效', withdrawn='已撤回', expi
 # Statuses `wait` keeps waiting through: 核准中 becomes 已核准 or 核准失敗 soon after.
 NOT_YET = ('pending', 'approving')
 OFFLINE = '看板沒在執行'
+# No ID came back, so the proposal cannot be looked up; sending again may make a second one.
+NO_ANSWER = '看板沒有回應：不確定提案有沒有收下，請使用者看看板上有沒有這筆，再決定要不要重送'
 
 
 class Done(Exception):
@@ -101,8 +103,7 @@ def ask_board(request):
         if not isinstance(value, dict):
             raise ValueError
     except (ValueError, UnicodeDecodeError):
-        raise Done(3, '看板沒有回應：提案可能沒送到，稍後用 status 查不到就再送一次',
-                   dict(ok=False, error='no-answer'))
+        raise Done(3, NO_ANSWER, dict(ok=False, error='no-answer', reason=NO_ANSWER))
     return value
 
 
@@ -111,8 +112,8 @@ def refused(reply):
     kind = reply.get('error')
     if kind == 'refused':
         raise Done(1, f'拒收：{reason}', reply)
-    if kind == 'board' and reason == '看板沒有回應':
-        raise Done(3, reason, reply)
+    if kind == 'board-timeout':
+        raise Done(3, NO_ANSWER, dict(reply, reason=NO_ANSWER))
     raise Done(1, reason, reply)
 
 

@@ -3,7 +3,9 @@
 
 The board starts this program and watches it (src/lib/server/task-proposals.ts); it never runs on
 its own. Usage: `task-proposal-acceptor.py <socket path>`; the hcom command to list agents with is
-the JSON array in `LAT_PROPOSAL_HCOM_COMMAND` (`["hcom"]` when not set).
+the JSON array in `LAT_PROPOSAL_HCOM_COMMAND` (`["hcom"]` when not set), and the LAT skill folder
+whose `scripts/_lat_common.py` gives LAT's own rules for its session records is
+`LAT_PROPOSAL_LAT_DIR` (the board's `latDir`).
 
 Each connection to the socket sends one JSON line, `{"op": "submit", "proposal": {...}}` or
 `{"op": "withdraw", "id": "..."}`, and gets one JSON line back. Before anything reaches the board
@@ -17,16 +19,20 @@ name the sender gives:
    `HCOM_PROCESS_ID`); the client must be the process's own name;
 4. `hcom list --json` must hold exactly one agent with that process ID, of that client, whose name
    or base name is the environment's name; its name is the verified HCOM name;
-5. every snapshot of the walk is taken again: a process that ended or was replaced meanwhile refuses.
+5. the role is read from LAT's session records (never a reason to refuse here): an active record
+   of the agent's session with its HCOM name is `controller` (LAT 主控), no such record `agent`
+   (一般 Agent), a record, folder or LAT install that cannot be read `unknown` (無法判斷);
+6. every snapshot of the walk is taken again, last, right before the request is handed on: a
+   process that ended or was replaced meanwhile refuses. The peer's own snapshot is taken as soon
+   as the connection is accepted, before its request is read, and the walk must start from it.
 
 Any step that fails answers `{"ok": false, "error": "refused", "reason": ...}` and nothing reaches
-the board. Then the role is read from LAT's session records (never a reason to refuse here): an
-active record of the agent's session with its HCOM name is `controller` (LAT 主控), no such record
-`agent` (一般 Agent), a record or folder that cannot be read `unknown` (無法判斷).
+the board.
 
 Verified requests go to the board on standard output, one JSON line each with a sequence number
 (`{"seq": 1, "op": ..., "proposer": {...}, ...}`); the board answers on standard input
-(`{"seq": 1, "reply": {...}}`) and the reply goes back to the sender as is. Lines with `event`
+(`{"seq": 1, "reply": {...}}`) and the reply goes back to the sender as is; a board that does not
+answer in 30 seconds gets the sender `{"ok": false, "error": "board-timeout", ...}`. Lines with `event`
 (`ready`, `refused`) are for the board's log only. Standard
 input closing (the board ended) ends this program and removes the socket. The socket is bound
 under umask 0177, so it is 0600 from the start; by default it is in the task-proposal folder (0700).
@@ -36,6 +42,7 @@ the same account, as pd's own note says.
 
 Only the standard library.
 """
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -49,7 +56,6 @@ import threading
 AGENT_NAMES = ('claude', 'codex')
 MAX_REQUEST_BYTES = 1024 * 1024
 HCOM_TIMEOUT_SECONDS = 5
-GIT_TIMEOUT_SECONDS = 5
 # How long one sender may take to send its request, and the board to answer it.
 REQUEST_TIMEOUT_SECONDS = 10
 BOARD_TIMEOUT_SECONDS = 30
@@ -68,15 +74,20 @@ def snapshot(pid):
         status_text = (Path('/proc') / str(pid) / 'status').read_bytes().decode()
     except OSError:
         raise Refused('送出的程序在查證途中結束或被替換')
-    head, sep, tail = raw.rpartition(') ')
-    fields = tail.split()
-    stat_pid, comm = head.split(' (', 1)
-    status = dict(line.split(':', 1) for line in status_text.splitlines() if ':' in line)
-    if (not sep or int(stat_pid) != pid or int(status['Pid']) != pid
-            or int(status['PPid']) != int(fields[1]) or status['Name'].strip() != comm
-            or fields[0] in ('Z', 'X', 'x')):
+    try:
+        head, sep, tail = raw.rpartition(') ')
+        fields = tail.split()
+        stat_pid, comm = head.split(' (', 1)
+        status = dict(line.split(':', 1) for line in status_text.splitlines() if ':' in line)
+        consistent = (sep and int(stat_pid) == pid and int(status['Pid']) == pid
+                      and int(status['PPid']) == int(fields[1]) and status['Name'].strip() == comm
+                      and fields[0] not in ('Z', 'X', 'x'))
+        taken = pid, int(fields[1]), int(fields[19]), comm
+    except (ValueError, KeyError, IndexError):
+        consistent = False
+    if not consistent:
         raise Refused('送出的程序在查證途中結束或被替換')
-    return pid, int(fields[1]), int(fields[19]), comm
+    return taken
 
 
 def recheck(chain):
@@ -152,9 +163,12 @@ def hcom_record(command, env_name, client, process_id):
     return record
 
 
-def verify(peer_pid, command):
-    """The verified proposer of a connection whose peer is `peer_pid`; raises Refused."""
-    agent, chain = agent_ancestor(peer_pid)
+def verify(peer, command, lat):
+    """The verified proposer of a connection whose peer was `peer` (its snapshot when the connection
+    was accepted); raises Refused."""
+    agent, chain = agent_ancestor(peer[0])
+    if chain[0] != peer:
+        raise Refused('送出的程序在查證途中結束或被替換')
     recheck(chain)
     env = environment(agent[0])
     env_name, client, process_id = (env.get(key, '') for key in
@@ -171,44 +185,40 @@ def verify(peer_pid, command):
         raise Refused('送出的程序在查證途中結束或被替換')
     record = hcom_record(command, env_name, client, process_id)
     session_id = record.get('session_id') if label(record.get('session_id')) else env.get(SESSION_ENV[client], '')
+    proposer = dict(name=record['name'], client=client, pid=agent[0], startTime=agent[2],
+                    processId=process_id, sessionId=session_id or None, folder=folder)
+    proposer['role'] = role(proposer, lat)
     recheck(chain)
-    return dict(name=record['name'], client=client, pid=agent[0], startTime=agent[2],
-                processId=process_id, sessionId=session_id or None, folder=folder)
+    return proposer
 
 
-def shared_lat_dir(folder):
-    """Where LAT keeps the session records for `folder`: the main checkout's .lat (linked worktrees
-    share it), or the folder's own .lat outside git. None when git fails in an unexpected way."""
+def lat_rules():
+    """LAT's own `_lat_common` (where a folder's session records are, which stored name is the
+    controller's), from the board's LAT skill folder; None when it cannot be loaded."""
+    folder = os.environ.get('LAT_PROPOSAL_LAT_DIR', '')
+    path = Path(folder) / 'scripts/_lat_common.py'
     try:
-        result = subprocess.run(['git', '-C', folder, 'rev-parse', '--path-format=absolute',
-                                 '--git-common-dir'], stdin=subprocess.DEVNULL,
-                                capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS)
-    except FileNotFoundError:
-        return Path(folder) / '.lat'
-    except (OSError, subprocess.TimeoutExpired):
+        spec = importlib.util.spec_from_file_location('_lat_common', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module if callable(getattr(module, 'shared_lat_dir', None)) and callable(getattr(module, 'same_controller', None)) else None
+    except Exception:  # noqa: BLE001 - no LAT install leaves every role unknown
         return None
-    if result.returncode == 0 and result.stdout.strip():
-        return Path(result.stdout.strip()).parent / '.lat'
-    # 128: not a git repository.
-    return Path(folder) / '.lat' if result.returncode == 128 else None
 
 
-def same_controller(stored, full_name):
-    """LAT's own rule: older records may hold the base name where the full HCOM name is now."""
-    return isinstance(stored, str) and bool(stored) and (stored == full_name or full_name.endswith(f'-{stored}'))
-
-
-def role(proposer):
-    """`controller`, `agent` or `unknown` from LAT's session record of the proposer's session."""
+def role(proposer, lat):
+    """`controller`, `agent` or `unknown` from LAT's session record of the proposer's session, found
+    the way LAT finds it (the shared .lat, then an older one in the folder's own .lat)."""
     session_id = proposer.get('sessionId')
     if not session_id:
         return 'agent'
-    if '/' in session_id or session_id in ('.', '..'):
+    if lat is None or '/' in session_id or session_id in ('.', '..'):
         return 'unknown'
-    lat = shared_lat_dir(proposer['folder'])
-    if lat is None:
+    try:
+        shared = Path(lat.shared_lat_dir(proposer['folder']))
+    except Exception:  # noqa: BLE001 - git failing in an unexpected way
         return 'unknown'
-    paths = [lat / 'sessions' / f'{session_id}.json', Path(proposer['folder']) / '.lat/sessions' / f'{session_id}.json']
+    paths = [shared / 'sessions' / f'{session_id}.json', Path(proposer['folder']) / '.lat/sessions' / f'{session_id}.json']
     found = None
     for path in paths:
         try:
@@ -228,7 +238,8 @@ def role(proposer):
     if not isinstance(record, dict) or not isinstance(record.get('status'), str):
         return 'unknown'
     if (record['status'] == 'active' and record.get('session_id') == session_id
-            and same_controller(record.get('hcom_name'), proposer['name'])):
+            and isinstance(record.get('hcom_name'), str) and record['hcom_name']
+            and lat.same_controller(record['hcom_name'], proposer['name'])):
         return 'controller'
     return 'agent'
 
@@ -248,7 +259,8 @@ class Board:
             sys.stdout.write(line)
             sys.stdout.flush()
 
-    def ask(self, value):
+    def forward(self, value):
+        """Hand a verified request to the board and wait for its reply."""
         done = threading.Event()
         box = {}
         with self.lock:
@@ -259,7 +271,7 @@ class Board:
         if not done.wait(BOARD_TIMEOUT_SECONDS):
             with self.lock:
                 self.waiting.pop(seq, None)
-            return dict(ok=False, error='board', reason='看板沒有回應')
+            return dict(ok=False, error='board-timeout', reason='看板沒有回應')
         return box['reply']
 
     def read_replies(self):
@@ -300,36 +312,41 @@ def read_request(connection):
     return value if isinstance(value, dict) else None
 
 
-def answer(connection, value):
+def reply_to_sender(connection, value):
     try:
         connection.sendall((json.dumps(value, ensure_ascii=False) + '\n').encode())
     except OSError:
         pass
 
 
-def handle(connection, board, command):
+def handle(connection, board, command, lat):
+    """Take the sender's snapshot at once, read its request, verify it, and hand it straight on."""
     try:
         pid, uid = peer_of(connection)
         if uid != os.getuid():
             board.emit(dict(event='refused', reason='other account', peer_pid=pid))
-            return answer(connection, dict(ok=False, error='refused', reason='送出的程序不是看板的系統帳號'))
+            return reply_to_sender(connection, dict(ok=False, error='refused', reason='送出的程序不是看板的系統帳號'))
+        try:
+            peer = snapshot(pid)
+        except Refused as refused:
+            board.emit(dict(event='refused', reason=str(refused), peer_pid=pid))
+            return reply_to_sender(connection, dict(ok=False, error='refused', reason=str(refused)))
         request = read_request(connection)
         op = request.get('op') if request else None
         if op not in ('submit', 'withdraw'):
-            return answer(connection, dict(ok=False, error='bad-request', reason='看不懂這個請求'))
+            return reply_to_sender(connection, dict(ok=False, error='bad-request', reason='看不懂這個請求'))
         try:
-            proposer = verify(pid, command)
+            proposer = verify(peer, command, lat)
         except Refused as refused:
             board.emit(dict(event='refused', reason=str(refused), peer_pid=pid))
-            return answer(connection, dict(ok=False, error='refused', reason=str(refused)))
-        proposer['role'] = role(proposer)
+            return reply_to_sender(connection, dict(ok=False, error='refused', reason=str(refused)))
         if op == 'submit':
-            ask = dict(op='submit', proposer=proposer, proposal=request.get('proposal'))
+            forwarded = dict(op='submit', proposer=proposer, proposal=request.get('proposal'))
         else:
-            ask = dict(op='withdraw', proposer=proposer, id=request.get('id'))
-        answer(connection, board.ask(ask))
+            forwarded = dict(op='withdraw', proposer=proposer, id=request.get('id'))
+        reply_to_sender(connection, board.forward(forwarded))
     except (OSError, ValueError) as error:
-        answer(connection, dict(ok=False, error='bad-request', reason=f'這個請求沒能處理：{error}'))
+        reply_to_sender(connection, dict(ok=False, error='bad-request', reason=f'這個請求沒能處理：{error}'))
     finally:
         connection.close()
 
@@ -364,6 +381,7 @@ def main():
         raise SystemExit('usage: task-proposal-acceptor.py <socket path>')
     path = Path(sys.argv[1])
     command = hcom_command()
+    lat = lat_rules()
     server = listen(path)
     board = Board()
     threading.Thread(target=board.read_replies, daemon=True).start()
@@ -375,7 +393,7 @@ def main():
                 connection, _ = server.accept()
             except OSError:
                 return
-            threading.Thread(target=handle, args=(connection, board, command), daemon=True).start()
+            threading.Thread(target=handle, args=(connection, board, command, lat), daemon=True).start()
 
     threading.Thread(target=accept, daemon=True).start()
     board.emit(dict(event='ready', pid=os.getpid()))
