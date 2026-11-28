@@ -162,13 +162,17 @@ def withdraw(args):
     raise Done(0, f'已撤回：{args.id}', reply)
 
 
+# What the board saved of an approval: the whole task and brief, not part of the answer.
+SAVED_ONLY = ('approval', 'approvalHash', 'deviceId')
+
+
 def current(proposal):
     """The proposal's status as its files say now; None when there is no such proposal."""
     folder = proposals_dir()
     try:
         result = json.loads((folder / f'{proposal}.result.json').read_text(encoding='utf-8'))
         if isinstance(result, dict) and result.get('status') in LABELS:
-            return result
+            return {key: value for key, value in result.items() if key not in SAVED_ONLY}
     except FileNotFoundError:
         pass
     except (OSError, ValueError):

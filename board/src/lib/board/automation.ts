@@ -104,11 +104,30 @@ export interface AutomationTaskInput {
 	review: ReviewSpec;
 }
 
+/** Where a task came from when it was not the user's own 新增任務: an agent's 任務提案 the user
+ *  approved with the board's passkey (#760). Kept through edits; only the brief part goes once the
+ *  brief path is changed. */
+export interface TaskSource {
+	kind: 'proposal';
+	proposalId: string;
+	/** The proposer as the board verified it when the proposal came in. */
+	proposer: { name: string; client: AgentClient; role: 'controller' | 'agent' | 'unknown'; folder: string; sessionId: string | null };
+	proposedAt: string;
+	approvedAt: string;
+	/** The logged-in device that approved, and the board passkey it signed with. */
+	deviceId: string;
+	passkeyId: string;
+	/** An agent task's brief as approved: the board's own copy, which the task's brief path names
+	 *  while this is here (核准時的版本); `from` is where the agent had it. */
+	brief?: { path: string; from: string; sha256: string };
+}
+
 export interface AutomationTask extends AutomationTaskInput {
 	id: string;
 	paused: boolean;
 	createdAt: string;
 	updatedAt: string;
+	source?: TaskSource;
 }
 
 /** 自動、手動、預覽、沿用原紀錄. */

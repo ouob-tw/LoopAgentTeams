@@ -1,7 +1,7 @@
 // 任務提案: an agent's request for a new automation task, kept by the board until the user decides
 // it (#699). The proposal and result files' shapes, shared by the server, the pages and the agent's
 // command (skills/local/task-proposal/scripts/task-proposal.py reads the same result files).
-import type { AutomationTaskInput } from './automation.ts';
+import type { AutomationTaskInput, TaskSource } from './automation.ts';
 
 /** How the board placed the proposer against LAT's session records. */
 export type ProposerRole = 'controller' | 'agent' | 'unknown';
@@ -40,8 +40,10 @@ export interface ProposalFile {
 
 /** A result's status. `approving` (核准中) is the approval's commit point (#760): the result file
  *  then holds what is approved and is rewritten in place to `approved` or `approve-failed`; every
- *  other status is written once and never changes. */
+ *  other status is written once and never changes. Each final one but `withdrawn` is told to the
+ *  proposer over HCOM (`NOTIFIED`). */
 export type ResultStatus = 'invalid' | 'withdrawn' | 'expired' | 'rejected' | 'approving' | 'approved' | 'approve-failed';
+export const NOTIFIED: readonly ResultStatus[] = ['approved', 'approve-failed', 'rejected', 'expired', 'invalid'];
 export const RESULT_LABELS: Record<ResultStatus | 'pending', string> = {
 	pending: '等待中',
 	invalid: '無效',
@@ -53,6 +55,18 @@ export const RESULT_LABELS: Record<ResultStatus | 'pending', string> = {
 	'approve-failed': '核准失敗'
 };
 
+/** What an approval committed to (核准中), saved whole in the result file: the task is made from
+ *  this alone, never from the proposal file again, which may change or go afterwards. */
+export interface Approval {
+	/** Fixed by the proposal ID (`approvedTaskId`): one proposal, one task, however often it is retried. */
+	taskId: string;
+	/** The proposal file's SHA-256 the card showed and the passkey signed for. */
+	contentHash: string;
+	task: AutomationTaskInput;
+	brief: ProposalFile['brief'];
+	source: Omit<TaskSource, 'brief'>;
+}
+
 /** `<id>.result.json`: who took the proposal. Written by linking a finished temporary file into
  *  place, which fails when one is there already, so only the first result counts. */
 export interface ResultFile {
@@ -62,11 +76,36 @@ export interface ResultFile {
 	at: string;
 	/** `invalid`: field → what is wrong, as the 新增任務 form words it. */
 	errors?: Record<string, string>;
-	/** `rejected`: the user's reason; `approve-failed`: why. */
+	/** `rejected`: the user's reason, when given; `approve-failed`: why. */
 	reason?: string;
 	/** `approved`: the task made from it. */
 	taskId?: string;
+	/** `rejected`: the logged-in device that rejected it. */
+	deviceId?: string;
+	/** `approving`, and `approved` or `approve-failed` after it: what was approved, and the SHA-256
+	 *  of its JSON, which a damaged record no longer matches. */
+	approval?: Approval;
+	approvalHash?: string;
 }
+
+/** The task an approved proposal becomes: the same ID for the same proposal. */
+export const approvedTaskId = (proposalId: string) => `proposal-${proposalId}`;
+
+/** `<id>.notify.json`: the one HCOM message telling the proposer of a final result (結果通知).
+ *  `sending` is written before it goes out; a board that restarts and finds it so never sends again
+ *  and records `unknown` (通知結果不明). */
+export interface NotifyFile {
+	version: 1;
+	id: string;
+	/** Always 1: a proposal's message is tried at most once. */
+	attempt: 1;
+	status: 'sending' | 'sent' | 'failed' | 'unknown';
+	at: string;
+	/** `sent`: the HCOM name it went to; `failed`: why not. */
+	to?: string;
+	reason?: string;
+}
+export const NOTIFY_LABELS: Record<NotifyFile['status'], string> = { sending: '通知中', sent: '已通知', failed: '通知失敗', unknown: '通知結果不明' };
 
 /** A waiting proposal as the list API sends it. `contentHash` is the proposal file's SHA-256: the
  *  card shown is the version an approval (#760) must match. */
@@ -80,8 +119,13 @@ export interface PendingProposal {
 	contentHash: string;
 }
 
-/** One proposal by ID: the pending one, or its result. */
-export type ProposalDetail = Omit<PendingProposal, 'task'> & { task: AutomationTaskInput | null; status: ResultStatus | 'pending'; result: ResultFile | null };
+/** One proposal by ID: the pending one, or its result, and how its proposer was told of it. */
+export type ProposalDetail = Omit<PendingProposal, 'task'> & { task: AutomationTaskInput | null; status: ResultStatus | 'pending'; result: ResultFile | null; notify: NotifyFile | null };
+
+/** The longest reason a rejection keeps. */
+export const MAX_REJECT_REASON = 500;
+/** How long a challenge to approve one proposal can be signed (核准挑戰). */
+export const APPROVAL_CHALLENGE_MS = 5 * 60 * 1000;
 
 /** 24 hours unanswered and a proposal expires; an ended one and its result go 7 days after the result. */
 export const PROPOSAL_EXPIRY_MS = 24 * 60 * 60 * 1000;

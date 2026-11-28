@@ -47,6 +47,9 @@
 // `kill`, but takes the agent off the list only, and before it sleeps (so a stop that runs out of time
 // has still stopped it): its pane and Herdr agent stay, as `hcom stop` leaves them. `breaksList:
 // { exit, stderr }` makes every list after it fail that way, as `listFail` does.
+// `send` (the board's 任務提案 result messages) is logged to <dir>/hcom-send-calls.jsonl with its
+// arguments, the text it read from standard input and the names of any HCOM_* variables (but
+// HCOM_DIR) it got; `send: { exit, stderr, sleepMs }` makes it fail or wait before exiting.
 // `config terminal --info` is logged to <dir>/hcom-config-calls.jsonl and lists the presets, with
 // `herdr-reuse` among them only when `holdTerminal` is set. A launch or resume with
 // `--terminal herdr-reuse` runs in the pane HCOM_REUSE_PANE names, and its tab, of the fake
@@ -142,6 +145,16 @@ if (args[0] === 'events') {
 	const zoned = (/** @type {string} */ ts) => (/[zZ]|[+-]\d\d:?\d\d$/.test(ts) ? ts : `${ts}Z`);
 	for (const line of lines) if (Date.parse(zoned(JSON.parse(line).ts)) >= after) process.stdout.write(line + '\n');
 	process.exit(0);
+}
+
+if (args[0] === 'send') {
+	// Never a real message: logged with the text it read from standard input.
+	const text = readFileSync(0, 'utf8');
+	appendFileSync(join(dir, 'hcom-send-calls.jsonl'), JSON.stringify({ args, text, agentLike: Object.keys(process.env).filter((name) => name.startsWith('HCOM_') && name !== 'HCOM_DIR') }) + '\n');
+	const send = plan.send ?? {};
+	if (send.sleepMs) await new Promise((resolve) => setTimeout(resolve, send.sleepMs));
+	process.stderr.write(send.stderr ?? '');
+	process.exit(send.exit ?? 0);
 }
 
 const reusing = args.includes('herdr-reuse');
